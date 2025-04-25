@@ -184,7 +184,22 @@ def main():
 
         # Clone repo and checkout branch
         subprocess.run(['git', 'clone', repo_url, branch_dir], check=True)
-        subprocess.run(['git', 'checkout', branch_name], cwd=branch_dir, check=False)
+
+        # Try to checkout with -b to create a new branch and set upstream tracking in one command
+        result = subprocess.run(['git', 'checkout', '-b', branch_name, '--track', f'origin/{branch_name}'],
+                               cwd=branch_dir, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+        # If branch already exists, warn and ask user
+        if result.returncode != 0 and 'already exists' in result.stderr:
+            print(f"Warning: Branch '{branch_name}' already exists")
+            response = input("Continue with existing branch? [y/N]: ")
+            if response.lower() != 'y':
+                print("Operation cancelled")
+                sys.exit(1)
+
+            # Checkout existing branch instead
+            subprocess.run(['git', 'checkout', branch_name], cwd=branch_dir, check=True)
+
         subprocess.run(['git', 'pull'], cwd=branch_dir, check=False)
 
     # Session name is just the branch name
