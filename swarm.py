@@ -14,6 +14,12 @@ CONFIG_FILE = 'swarm.yaml'
 # Default programs to launch in the panes
 DEFAULT_PROGRAMS = ['codex']
 
+# Layout prefixes
+LAYOUT_NEW_WINDOW = '*'  # Create a new window
+LAYOUT_HORIZONTAL_SPLIT = '|'  # Split horizontally (side by side)
+LAYOUT_VERTICAL_SPLIT = '~'  # Split vertically (one above the other)
+VALID_LAYOUTS = [LAYOUT_NEW_WINDOW, LAYOUT_HORIZONTAL_SPLIT, LAYOUT_VERTICAL_SPLIT]
+
 def load_config():
     """Load configuration from YAML file."""
     if not os.path.exists(CONFIG_FILE):
@@ -76,67 +82,102 @@ def session_exists(session_name):
     """Check if a tmux session exists."""
     return tmux.has_session(session_name)
 
-def setup_tmux_session(branch_dir, session_name):
-    """Create a new tmux session and set up the window layout."""
+def extract_layout_and_command(command_str):
+    """Extract the layout prefix and the actual command from a command string.
+
+    Returns:
+        tuple: (layout_prefix, command)
+    """
+    if not command_str:
+        return (LAYOUT_NEW_WINDOW, command_str)
+
+    # Check if the command starts with a valid layout prefix followed by a space
+    parts = command_str.split(' ', 1)
+    if len(parts) > 1 and parts[0] in VALID_LAYOUTS:
+        layout = parts[0]
+        cmd = parts[1]
+        return (layout, cmd)
+
+    # Default to new window if no valid prefix is found
+    return (LAYOUT_NEW_WINDOW, command_str)
+
+def create_tmux_session(session_name, branch_dir):
+    """Create a new tmux session."""
     print(f"Creating new tmux session: {session_name}")
 
     # Create a new session with the shell
-    result1 = tmux.new_session(session_name, branch_dir)
-    if result1.returncode != 0:
-        print(f"Error creating session: {result1.stderr}")
+    result = tmux.new_session(session_name, branch_dir)
+    if result.returncode != 0:
+        print(f"Error creating session: {result.stderr}")
         return False
 
-    # Rename the window to 'codex'
-    tmux.rename_window(f'{session_name}:0', 'codex')
+    # Rename the window to make it more recognizable
+    tmux.rename_window(f'{session_name}:0', 'main')
 
-    # List panes to debug
-    panes_result = tmux.list_panes(session_name)
-    print(f"Initial panes: {panes_result.stdout}")
+    return True
 
-    # Add a small delay to ensure the session is fully initialized
-    time.sleep(1)
+def setup_and_run_programs(session_name, branch_dir, programs, port):
+    """Set up the tmux session layout based on command prefixes and run programs."""
+    if not programs:
+        return False
 
-    # Create second window pane (use explicit target for first pane)
-    result2 = tmux.split_window(f'{session_name}:0.0', '-h', branch_dir)
-    if result2.returncode != 0:
-        print(f"Error creating second pane: {result2.stderr}")
-        # Try to create the pane again with just the session name
-        result2b = tmux.split_window(session_name, '-h', branch_dir)
-        if result2b.returncode != 0:
-            print(f"Second attempt failed: {result2b.stderr}")
-            return False
+    # Create the initial session
+    if not create_tmux_session(session_name, branch_dir):
+        return False
 
-    # List panes to debug after first split
-    panes_result2 = tmux.list_panes(session_name, '#{pane_index}')
-    print(f"Panes after first split: {panes_result2.stdout}")
+    current_window = 0
+    current_pane = 0
 
-    # Add a small delay between pane creations
-    time.sleep(1)
+    # Process each program command with its layout
+    for i, program in enumerate(programs):
+        layout, cmd = extract_layout_and_command(program)
 
-    # For the third pane, check if pane 1 exists, otherwise use session name
-    if '1' in panes_result2.stdout:
-        target = f'{session_name}.1'
-    else:
-        # Just use the session name and let tmux figure it out
-        target = session_name
+        # Replace port variables in the command
+        cmd = replace_port_variables(cmd, port)
 
-    # Try all possible pane targets for the third pane
-    result3 = tmux.split_window(target, '-v', branch_dir)
-    if result3.returncode != 0:
-        print(f"First vertical split attempt failed, trying left pane: {result3.stderr}")
-        result3b = tmux.split_window(f'{session_name}:0.0', '-v', branch_dir)
+        if i == 0:
+            # First command always runs in the initial pane
+            tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
+            continue
 
-        if result3b.returncode != 0:
-            print(f"Second vertical split attempt failed, trying session: {result3b.stderr}")
-            # Try with just the session name
-            result3c = tmux.split_window(session_name, '-v', branch_dir)
+        # Apply the layout and run the command
+        if layout == LAYOUT_NEW_WINDOW:
+            # Create a new window
+            result = tmux.new_window('-t', f'{session_name}:{current_window+1}', '-c', branch_dir)
+            if result.returncode == 0:
+                current_window += 1
+                current_pane = 0
+                # Rename the window based on the command (use first word)
+                window_name = cmd.split()[0] if cmd else f"win{current_window}"
+                tmux.rename_window(f'{session_name}:{current_window}', window_name)
+                # Run the command in the new window
+                tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
+            else:
+                print(f"Failed to create new window: {result.stderr}")
 
-            if result3c.returncode != 0:
-                print(f"All vertical split attempts failed: {result3c.stderr}")
-                return False
+        elif layout == LAYOUT_HORIZONTAL_SPLIT:
+            # Create a horizontal split (side by side)
+            result = tmux.split_window(f'{session_name}:{current_window}.{current_pane}', '-h', branch_dir)
+            if result.returncode == 0:
+                current_pane += 1
+                # Run the command in the new pane
+                tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
+            else:
+                print(f"Failed to create horizontal split: {result.stderr}")
 
-    # Select the left pane (codex)
+        elif layout == LAYOUT_VERTICAL_SPLIT:
+            # Create a vertical split (one above the other)
+            result = tmux.split_window(f'{session_name}:{current_window}.{current_pane}', '-v', branch_dir)
+            if result.returncode == 0:
+                current_pane += 1
+                # Run the command in the new pane
+                tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
+            else:
+                print(f"Failed to create vertical split: {result.stderr}")
+
+    # Select the first pane of the first window
     tmux.select_pane(f'{session_name}:0.0')
+
     return True
 
 def get_programs(config, repo_url):
@@ -153,6 +194,9 @@ def get_init_commands(config, repo_url):
 
 def replace_port_variables(command, port):
     """Replace ${PORT} and ${PORT+n} variables in a command string."""
+    if not command:
+        return command
+
     # Replace ${PORT} with the actual port
     command = command.replace('${PORT}', str(port))
 
@@ -168,125 +212,14 @@ def replace_port_variables(command, port):
 
     return command
 
-def launch_programs(session_name, programs, port):
-    """Launch programs in the tmux panes."""
-    # Check if we have enough programs defined
-    if len(programs) < 3:
-        print(f"Warning: Only {len(programs)} programs defined. Using defaults for missing programs.")
-        # Use defaults for missing ones - just run codex in all panes
-        programs_to_run = programs.copy()
-        while len(programs_to_run) < 3:
-            programs_to_run.append('codex')
-    else:
-        programs_to_run = programs[:3]
+def restart_session(session_name, branch_dir, programs, port):
+    """Restart the session by killing it and creating a new one."""
+    # Kill the existing session
+    if session_exists(session_name):
+        tmux.kill_session('-t', session_name)
 
-    # Launch each program in its respective pane
-    for i, program in enumerate(programs_to_run):
-        # Replace port variables in the command
-        command = replace_port_variables(program, port)
-        tmux.send_keys(f'{session_name}:0.{i}', command)
-
-def restart_programs(session_name, programs, port):
-    """Restart programs in the tmux panes."""
-    # Check if we have enough programs defined
-    if len(programs) < 3:
-        print(f"Warning: Only {len(programs)} programs defined. Using defaults for missing programs.")
-        # Use defaults for missing ones - just run codex in all panes
-        programs_to_run = programs.copy()
-        while len(programs_to_run) < 3:
-            programs_to_run.append('codex')
-    else:
-        programs_to_run = programs[:3]
-
-    # Restart each program in its respective pane
-    for i, program in enumerate(programs_to_run):
-        # Replace port variables in the command
-        command = replace_port_variables(program, port)
-        tmux.send_keys(f'{session_name}:0.{i}', 'C-c', False)
-        tmux.send_keys(f'{session_name}:0.{i}', 'clear')
-        tmux.send_keys(f'{session_name}:0.{i}', command)
-
-def reset_session_layout(session_name, branch_dir):
-    """Reset the session layout to ensure it has exactly three panes."""
-    # First check if the session has the right number of panes
-    result = tmux.list_panes(session_name, '#{pane_index}')
-    panes = result.stdout.strip().split('\n')
-
-    # Kill existing panes if layout is wrong
-    if len(panes) != 3:
-        # Kill all panes except the first one
-        for pane in panes[1:]:
-            try:
-                tmux.kill_pane(f'{session_name}.{pane}')
-            except Exception:
-                pass
-
-        # List panes to debug
-        panes_result = tmux.list_panes(session_name, '#{pane_index}')
-        print(f"Initial panes (update): {panes_result.stdout}")
-
-        # Add a small delay to ensure commands complete
-        time.sleep(1)
-
-        # Add panes for vite and API
-        result2 = tmux.split_window(f'{session_name}:0.0', '-h', branch_dir)
-        if result2.returncode != 0:
-            print(f"Error creating vite pane (update): {result2.stderr}")
-            # Try to create the pane again with just the session name
-            result2b = tmux.split_window(session_name, '-h', branch_dir)
-            if result2b.returncode != 0:
-                print(f"Second attempt failed (update): {result2b.stderr}")
-                return False
-
-        # List panes to debug after first split
-        panes_result2 = tmux.list_panes(session_name, '#{pane_index}')
-        print(f"Panes after first split (update): {panes_result2.stdout}")
-
-        # Add a small delay between pane creations
-        time.sleep(1)
-
-        # For the third pane, check if pane 1 exists, otherwise use session name
-        if '1' in panes_result2.stdout:
-            target = f'{session_name}.1'
-        else:
-            # Just use the session name and let tmux figure it out
-            target = session_name
-
-        # Try all possible pane targets for the third pane
-        result3 = tmux.split_window(target, '-v', branch_dir)
-        if result3.returncode != 0:
-            print(f"First vertical split attempt failed (update), trying left pane: {result3.stderr}")
-            result3b = tmux.split_window(f'{session_name}:0.0', '-v', branch_dir)
-
-            if result3b.returncode != 0:
-                print(f"Second vertical split attempt failed (update), trying session: {result3b.stderr}")
-                # Try with just the session name
-                result3c = tmux.split_window(session_name, '-v', branch_dir)
-
-                if result3c.returncode != 0:
-                    print(f"All vertical split attempts failed (update): {result3c.stderr}")
-                    return False
-
-    # Select the left pane (codex)
-    tmux.select_pane(f'{session_name}:0.0')
-    return True
-
-def create_or_update_session(branch_dir, session_name, programs, port):
-    """Create or update a tmux session."""
-    # Create session if it doesn't exist
-    if not session_exists(session_name):
-        if not setup_tmux_session(branch_dir, session_name):
-            return
-
-        # After layout is set up, launch programs
-        launch_programs(session_name, programs, port)
-    else:
-        # Session exists but we should ensure the correct layout and commands
-        if not reset_session_layout(session_name, branch_dir):
-            return
-
-        # After layout is reset, restart programs
-        restart_programs(session_name, programs, port)
+    # Create a new session with the specified layout
+    return setup_and_run_programs(session_name, branch_dir, programs, port)
 
 def find_next_available_port(used_ports):
     """Find the next available port in the range 5000-6000 with gaps of 10."""
@@ -412,8 +345,15 @@ def main():
     # Session name is just the branch name
     session_name = branch_name
 
-    # Create or update the tmux session
-    create_or_update_session(branch_dir, session_name, programs, branch_port)
+    # Check if the session already exists
+    if session_exists(session_name):
+        print(f"Session {session_name} already exists.")
+        response = input("Restart session? [y/N]: ")
+        if response.lower() == 'y':
+            restart_session(session_name, branch_dir, programs, branch_port)
+    else:
+        # Create a new session with the specified layout
+        setup_and_run_programs(session_name, branch_dir, programs, branch_port)
 
     # Check if we're already in a tmux session
     in_tmux = 'TMUX' in os.environ

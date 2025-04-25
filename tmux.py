@@ -64,3 +64,15 @@ def attach_session(session_name, unicode=True):
         cmd.append('-u')
     cmd.extend(['attach-session', '-t', session_name])
     return cmd  # Return command list for os.execvp()
+
+def new_window(*args):
+    """Create a new window in a tmux session."""
+    cmd = ['tmux', 'new-window']
+    cmd.extend(args)
+    return subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+def kill_session(*args):
+    """Kill a tmux session."""
+    cmd = ['tmux', 'kill-session']
+    cmd.extend(args)
+    return subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)

@@ -10,7 +10,7 @@ The intent is to assign each branch to a separate instance of an AI agent like C
 - Automatically clone repositories and check out branches
 - Create consistent development environments with tmux
 - Manage multiple branches across different repositories
-- Configure custom programs to run in each pane
+- Configure custom programs to run in each pane with flexible layouts
 - Automatically assign ports to different branches
 - Run initialization commands for new repositories
 - Support for dynamic port substitution in commands
@@ -48,8 +48,8 @@ git@github.com:username/repo:
     feature2: 5020
   programs:
     - 'codex'
-    - 'npm run dev --port=${PORT}'
-    - 'python api/server.py --port=${PORT+1}'
+    - '| npm run dev --port=${PORT}'
+    - '~ python api/server.py --port=${PORT+1}'
   init:
     - 'npm install'
     - 'pip install -r requirements.txt'
@@ -58,13 +58,27 @@ git@github.com:username/repo:
 ### Configuration Fields
 
 - `branches`: Maps branch names to port numbers (used for development servers)
-- `programs`: List of commands to run in each tmux pane
-  - First command: Left pane (usually editor/shell)
-  - Second command: Right top pane (usually frontend server)
-  - Third command: Right bottom pane (usually backend/API server)
+- `programs`: List of commands to run in each pane
+  - First command: Always runs in the initial pane/window
+  - Subsequent commands use layout prefixes to determine window/pane arrangement
 - `init`: List of commands to run when setting up a new repository
 
-If fewer than 3 programs are specified, `codex` will be used for the remaining panes.
+### Layout Prefixes
+
+Each command in the `programs` list (except the first one) can have a layout prefix:
+
+- `*` - Create a new window (default if no prefix is specified)
+- `|` - Create a horizontal split (side by side)
+- `~` - Create a vertical split (one above the other)
+
+Examples:
+```yaml
+programs:
+  - 'codex'                                    # First pane of initial window
+  - '| vite --port=${PORT}'                    # Horizontal split (side by side)
+  - '~ python api/server.py --port=${PORT+1}'  # Vertical split in the second pane
+  - '* npm test'                               # New window
+```
 
 ### Port Variable Substitution
 
@@ -76,14 +90,14 @@ Example:
 ```yaml
 programs:
   - 'codex'
-  - 'vite --port=${PORT}'
-  - 'flask run --port=${PORT+1}'
+  - '| vite --port=${PORT}'
+  - '~ flask run --port=${PORT+1}'
 ```
 
 If the branch's port is 5000, this will run:
 - `codex` in the first pane
-- `vite --port=5000` in the second pane
-- `flask run --port=5001` in the third pane
+- `vite --port=5000` in a horizontal split
+- `flask run --port=5001` in a vertical split of the second pane
 
 ## How It Works
 
@@ -92,21 +106,21 @@ If the branch's port is 5000, this will run:
 3. It creates a directory for the repository/branch if it doesn't exist
 4. It clones the repository and checks out the branch
 5. For new repositories, it runs the initialization commands (and asks to continue if any fail)
-6. It creates or updates a tmux session with three panes
+6. It creates a tmux session with the layout specified by the command prefixes
 7. It launches the configured programs in each pane, substituting port variables
 8. Finally, it attaches to the tmux session
 
 ## Default Setup
 
-By default, Swarm creates a tmux session with:
+By default, if no layout prefixes are specified, Swarm will create a new window for each command:
 
-1. Left pane: `codex` (or first program from config)
-2. Right top pane: Second program from config (default: `codex`)
-3. Right bottom pane: Third program from config (default: `codex`)
+1. Initial pane: First command (default: `codex`)
+2. Window 1: Second command
+3. Window 2: Third command
 
 ## Tips
 
-- Customize the programs for each repository in the YAML config file
+- Customize the programs and their layout for each repository in the YAML config file
 - Add initialization commands to automate repository setup
 - Use branch-specific configurations when needed
 - Use port variables to ensure services use the correct ports
