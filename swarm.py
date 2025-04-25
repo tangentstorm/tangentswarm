@@ -73,23 +73,82 @@ def create_or_update_session(branch_dir, session_name):
     """Create or update a tmux session."""
     # Create session if it doesn't exist
     if not session_exists(session_name):
+        print(f"Creating new tmux session: {session_name}")
+
         # Create a new session with the first window running codex
-        subprocess.run([
+        result1 = subprocess.run([
             'tmux', 'new-session', '-d', '-s', session_name,
             '-c', branch_dir, 'exec ${SHELL:-bash} -c "codex"'
-        ])
+        ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
 
-        # Create second window pane for vite
-        subprocess.run([
-            'tmux', 'split-window', '-h', '-t', session_name,
+        if result1.returncode != 0:
+            print(f"Error creating session: {result1.stderr}")
+            return
+
+        # List panes to debug
+        panes_result = subprocess.run(['tmux', 'list-panes', '-t', session_name],
+                                     stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+        print(f"Initial panes: {panes_result.stdout}")
+
+        # Add a small delay to ensure the session is fully initialized
+        time.sleep(1)
+
+        # Create second window pane for vite (use explicit target for first pane)
+        result2 = subprocess.run([
+            'tmux', 'split-window', '-h', '-t', f'{session_name}.0',
             '-c', branch_dir, 'exec ${SHELL:-bash} -c "APP=mn vite"'
-        ])
+        ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
 
-        # Create third window pane for API
-        subprocess.run([
-            'tmux', 'split-window', '-v', '-t', f'{session_name}.1',
+        if result2.returncode != 0:
+            print(f"Error creating vite pane: {result2.stderr}")
+            # Try to create the pane again with just the session name
+            result2b = subprocess.run([
+                'tmux', 'split-window', '-h', '-t', session_name,
+                '-c', branch_dir, 'exec ${SHELL:-bash} -c "APP=mn vite"'
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+            if result2b.returncode != 0:
+                print(f"Second attempt failed: {result2b.stderr}")
+                return
+
+        # List panes to debug after first split
+        panes_result2 = subprocess.run(['tmux', 'list-panes', '-t', session_name, '-F', '#{pane_index}'],
+                                      stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+        print(f"Panes after first split: {panes_result2.stdout}")
+
+        # Add a small delay between pane creations
+        time.sleep(1)
+
+        # For the third pane, check if pane 1 exists, otherwise use session name
+        if '1' in panes_result2.stdout:
+            target = f'{session_name}.1'
+        else:
+            # Just use the session name and let tmux figure it out
+            target = session_name
+
+        # Try all possible pane targets for the third pane
+        result3 = subprocess.run([
+            'tmux', 'split-window', '-v', '-t', target,
             '-c', branch_dir, 'exec ${SHELL:-bash} -c "APP=mn python api/tcode-server.py"'
-        ])
+        ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+        # If that failed, try splitting the left pane
+        if result3.returncode != 0:
+            print(f"First vertical split attempt failed, trying left pane: {result3.stderr}")
+            result3b = subprocess.run([
+                'tmux', 'split-window', '-v', '-t', f'{session_name}.0',
+                '-c', branch_dir, 'exec ${SHELL:-bash} -c "APP=mn python api/tcode-server.py"'
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+            if result3b.returncode != 0:
+                print(f"Second vertical split attempt failed, trying session: {result3b.stderr}")
+                # Try with just the session name
+                result3c = subprocess.run([
+                    'tmux', 'split-window', '-v', '-t', session_name,
+                    '-c', branch_dir, 'exec ${SHELL:-bash} -c "APP=mn python api/tcode-server.py"'
+                ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+                if result3c.returncode != 0:
+                    print(f"All vertical split attempts failed: {result3c.stderr}")
 
         # Select the left pane (codex)
         subprocess.run(['tmux', 'select-pane', '-t', f'{session_name}.0'])
@@ -115,16 +174,70 @@ def create_or_update_session(branch_dir, session_name):
                 'tmux', 'send-keys', '-t', f'{session_name}.0', 'C-c', 'clear && exec codex', 'Enter'
             ])
 
-            # Add panes for vite and API
-            subprocess.run([
-                'tmux', 'split-window', '-h', '-t', session_name,
-                '-c', branch_dir, 'exec ${SHELL:-bash} -c "APP=mn vite"'
-            ])
+            # List panes to debug
+            panes_result = subprocess.run(['tmux', 'list-panes', '-t', session_name, '-F', '#{pane_index}'],
+                                         stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+            print(f"Initial panes (update): {panes_result.stdout}")
 
-            subprocess.run([
-                'tmux', 'split-window', '-v', '-t', f'{session_name}.1',
+            # Add a small delay to ensure commands complete
+            time.sleep(1)
+
+            # Add panes for vite and API
+            result2 = subprocess.run([
+                'tmux', 'split-window', '-h', '-t', f'{session_name}.0',
+                '-c', branch_dir, 'exec ${SHELL:-bash} -c "APP=mn vite"'
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+            if result2.returncode != 0:
+                print(f"Error creating vite pane (update): {result2.stderr}")
+                # Try to create the pane again with just the session name
+                result2b = subprocess.run([
+                    'tmux', 'split-window', '-h', '-t', session_name,
+                    '-c', branch_dir, 'exec ${SHELL:-bash} -c "APP=mn vite"'
+                ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+                if result2b.returncode != 0:
+                    print(f"Second attempt failed (update): {result2b.stderr}")
+                    return
+
+            # List panes to debug after first split
+            panes_result2 = subprocess.run(['tmux', 'list-panes', '-t', session_name, '-F', '#{pane_index}'],
+                                          stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+            print(f"Panes after first split (update): {panes_result2.stdout}")
+
+            # Add a small delay between pane creations
+            time.sleep(1)
+
+            # For the third pane, check if pane 1 exists, otherwise use session name
+            if '1' in panes_result2.stdout:
+                target = f'{session_name}.1'
+            else:
+                # Just use the session name and let tmux figure it out
+                target = session_name
+
+            # Try all possible pane targets for the third pane
+            result3 = subprocess.run([
+                'tmux', 'split-window', '-v', '-t', target,
                 '-c', branch_dir, 'exec ${SHELL:-bash} -c "APP=mn python api/tcode-server.py"'
-            ])
+            ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+            # If that failed, try splitting the left pane
+            if result3.returncode != 0:
+                print(f"First vertical split attempt failed (update), trying left pane: {result3.stderr}")
+                result3b = subprocess.run([
+                    'tmux', 'split-window', '-v', '-t', f'{session_name}.0',
+                    '-c', branch_dir, 'exec ${SHELL:-bash} -c "APP=mn python api/tcode-server.py"'
+                ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+                if result3b.returncode != 0:
+                    print(f"Second vertical split attempt failed (update), trying session: {result3b.stderr}")
+                    # Try with just the session name
+                    result3c = subprocess.run([
+                        'tmux', 'split-window', '-v', '-t', session_name,
+                        '-c', branch_dir, 'exec ${SHELL:-bash} -c "APP=mn python api/tcode-server.py"'
+                    ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+                    if result3c.returncode != 0:
+                        print(f"All vertical split attempts failed (update): {result3c.stderr}")
         else:
             # Send commands to ensure correct programs are running
             subprocess.run([
@@ -208,8 +321,17 @@ def main():
     # Create or update the tmux session
     create_or_update_session(branch_dir, session_name)
 
-    # Replace current process with tmux attach
-    os.execvp('tmux', ['tmux', '-u', 'attach-session', '-t', session_name])
+    # Check if we're already in a tmux session
+    in_tmux = 'TMUX' in os.environ
+
+    if in_tmux:
+        print(f"Already in a tmux session, switching to session: {session_name}")
+        # Use switch-client instead of attach when already in tmux
+        subprocess.run(['tmux', 'switch-client', '-t', session_name])
+        sys.exit(0)
+    else:
+        # Replace current process with tmux attach
+        os.execvp('tmux', ['tmux', '-u', 'attach-session', '-t', session_name])
 
 if __name__ == "__main__":
     main()
