@@ -14,8 +14,14 @@ CONFIG_FILE = 'swarm.yaml'
 def load_config():
     """Load configuration from YAML file."""
     if not os.path.exists(CONFIG_FILE):
-        # Default config with an example repo
-        return {'example_repo': {'main': 5000}}
+        # Default config with an example repo and branches
+        return {
+            'example_repo': {
+                'branches': {
+                    'main': 5000
+                }
+            }
+        }
 
     with open(CONFIG_FILE, 'r') as f:
         return yaml.safe_load(f)
@@ -258,18 +264,26 @@ def main():
     # Load config
     config = load_config()
 
+    # Ensure repo has a branches key
+    if 'branches' not in config[repo_url]:
+        config[repo_url] = {'branches': {}}
+
     # Ensure branch exists in repo config
-    if branch_name not in config[repo_url]:
+    if branch_name not in config[repo_url]['branches']:
         # Collect all used ports
         used_ports = set()
-        for repo in config.values():
-            used_ports.update(repo.values())
+        for repo_config in config.values():
+            if 'branches' in repo_config:
+                used_ports.update(repo_config['branches'].values())
+            else:
+                # Handle legacy config format for backwards compatibility
+                used_ports.update(repo_config.values())
 
         # Find next available port
         port = find_next_available_port(used_ports)
 
         # Add new branch with port
-        config[repo_url][branch_name] = port
+        config[repo_url]['branches'][branch_name] = port
         save_config(config)
 
     # Checkout directory
