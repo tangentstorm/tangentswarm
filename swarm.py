@@ -11,6 +11,9 @@ import tmux
 
 CONFIG_FILE = 'swarm.yaml'
 
+# Default programs to launch in the panes
+DEFAULT_PROGRAMS = ['codex']
+
 def load_config():
     """Load configuration from YAML file."""
     if not os.path.exists(CONFIG_FILE):
@@ -19,7 +22,8 @@ def load_config():
             'example_repo': {
                 'branches': {
                     'main': 5000
-                }
+                },
+                'programs': DEFAULT_PROGRAMS
             }
         }
 
@@ -134,33 +138,45 @@ def setup_tmux_session(branch_dir, session_name):
     tmux.select_pane(f'{session_name}:0.0')
     return True
 
-def launch_programs(session_name):
+def get_programs(config, repo_url):
+    """Get the list of programs to run from the config."""
+    if 'programs' in config[repo_url]:
+        return config[repo_url]['programs']
+    return DEFAULT_PROGRAMS
+
+def launch_programs(session_name, programs):
     """Launch programs in the tmux panes."""
-    # Launch codex in the first pane
-    tmux.send_keys(f'{session_name}:0.0', 'codex')
+    # Check if we have enough programs defined
+    if len(programs) < 3:
+        print(f"Warning: Only {len(programs)} programs defined. Using defaults for missing programs.")
+        # Use defaults for missing ones - just run codex in all panes
+        programs_to_run = programs.copy()
+        while len(programs_to_run) < 3:
+            programs_to_run.append('codex')
+    else:
+        programs_to_run = programs[:3]
 
-    # Launch vite in the second pane
-    tmux.send_keys(f'{session_name}:0.1', 'APP=mn vite')
+    # Launch each program in its respective pane
+    for i, program in enumerate(programs_to_run):
+        tmux.send_keys(f'{session_name}:0.{i}', program)
 
-    # Launch tcode-server in the third pane
-    tmux.send_keys(f'{session_name}:0.2', 'APP=mn python api/tcode-server.py')
-
-def restart_programs(session_name):
+def restart_programs(session_name, programs):
     """Restart programs in the tmux panes."""
-    # Restart codex in the first pane
-    tmux.send_keys(f'{session_name}:0.0', 'C-c', False)
-    tmux.send_keys(f'{session_name}:0.0', 'clear')
-    tmux.send_keys(f'{session_name}:0.0', 'codex')
+    # Check if we have enough programs defined
+    if len(programs) < 3:
+        print(f"Warning: Only {len(programs)} programs defined. Using defaults for missing programs.")
+        # Use defaults for missing ones - just run codex in all panes
+        programs_to_run = programs.copy()
+        while len(programs_to_run) < 3:
+            programs_to_run.append('codex')
+    else:
+        programs_to_run = programs[:3]
 
-    # Restart vite in the second pane
-    tmux.send_keys(f'{session_name}:0.1', 'C-c', False)
-    tmux.send_keys(f'{session_name}:0.1', 'clear')
-    tmux.send_keys(f'{session_name}:0.1', 'APP=mn vite')
-
-    # Restart tcode-server in the third pane
-    tmux.send_keys(f'{session_name}:0.2', 'C-c', False)
-    tmux.send_keys(f'{session_name}:0.2', 'clear')
-    tmux.send_keys(f'{session_name}:0.2', 'APP=mn python api/tcode-server.py')
+    # Restart each program in its respective pane
+    for i, program in enumerate(programs_to_run):
+        tmux.send_keys(f'{session_name}:0.{i}', 'C-c', False)
+        tmux.send_keys(f'{session_name}:0.{i}', 'clear')
+        tmux.send_keys(f'{session_name}:0.{i}', program)
 
 def reset_session_layout(session_name, branch_dir):
     """Reset the session layout to ensure it has exactly three panes."""
@@ -227,7 +243,7 @@ def reset_session_layout(session_name, branch_dir):
     tmux.select_pane(f'{session_name}:0.0')
     return True
 
-def create_or_update_session(branch_dir, session_name):
+def create_or_update_session(branch_dir, session_name, programs):
     """Create or update a tmux session."""
     # Create session if it doesn't exist
     if not session_exists(session_name):
@@ -235,14 +251,14 @@ def create_or_update_session(branch_dir, session_name):
             return
 
         # After layout is set up, launch programs
-        launch_programs(session_name)
+        launch_programs(session_name, programs)
     else:
         # Session exists but we should ensure the correct layout and commands
         if not reset_session_layout(session_name, branch_dir):
             return
 
         # After layout is reset, restart programs
-        restart_programs(session_name)
+        restart_programs(session_name, programs)
 
 def find_next_available_port(used_ports):
     """Find the next available port in the range 5000-6000 with gaps of 10."""
@@ -268,6 +284,10 @@ def main():
     if 'branches' not in config[repo_url]:
         config[repo_url] = {'branches': {}}
 
+    # Ensure repo has a programs key
+    if 'programs' not in config[repo_url]:
+        config[repo_url]['programs'] = DEFAULT_PROGRAMS
+
     # Ensure branch exists in repo config
     if branch_name not in config[repo_url]['branches']:
         # Collect all used ports
@@ -285,6 +305,9 @@ def main():
         # Add new branch with port
         config[repo_url]['branches'][branch_name] = port
         save_config(config)
+
+    # Get programs to launch
+    programs = get_programs(config, repo_url)
 
     # Checkout directory
     branch_dir = f"./{repo_name}.{branch_name}"
@@ -318,7 +341,7 @@ def main():
     session_name = branch_name
 
     # Create or update the tmux session
-    create_or_update_session(branch_dir, session_name)
+    create_or_update_session(branch_dir, session_name, programs)
 
     # Check if we're already in a tmux session
     in_tmux = 'TMUX' in os.environ
