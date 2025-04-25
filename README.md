@@ -1,6 +1,9 @@
-# Swarm
+# TangentSwarm
 
-Swarm is a developer productivity tool that makes working with multiple branches in Git repositories easier by automating the creation of tmux sessions with customizable workspaces.
+TangentSwarm is a developer productivity tool that makes working with multiple branches in Git repositories easier,
+by automating the creation of tmux sessions with customizable workspaces.
+
+The intent is to assign each branch to a separate instance of an AI agent like Claude Code or OpenAI codex.
 
 ## Features
 
