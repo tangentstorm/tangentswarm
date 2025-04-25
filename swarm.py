@@ -23,7 +23,8 @@ def load_config():
                 'branches': {
                     'main': 5000
                 },
-                'programs': DEFAULT_PROGRAMS
+                'programs': DEFAULT_PROGRAMS,
+                'init': []
             }
         }
 
@@ -143,6 +144,12 @@ def get_programs(config, repo_url):
     if 'programs' in config[repo_url]:
         return config[repo_url]['programs']
     return DEFAULT_PROGRAMS
+
+def get_init_commands(config, repo_url):
+    """Get the list of initialization commands to run from the config."""
+    if 'init' in config[repo_url]:
+        return config[repo_url]['init']
+    return []
 
 def launch_programs(session_name, programs):
     """Launch programs in the tmux panes."""
@@ -273,6 +280,26 @@ def find_next_available_port(used_ports):
     # If all ports are used, start over from 5000 (shouldn't happen with this range)
     return 5000
 
+def run_init_commands(branch_dir, init_commands):
+    """Run initialization commands in the directory.
+
+    Returns:
+        bool: True if all commands succeeded, False otherwise.
+    """
+    if not init_commands:
+        return True
+
+    print("Running initialization commands...")
+    for cmd in init_commands:
+        print(f"Executing: {cmd}")
+        result = subprocess.run(cmd, shell=True, cwd=branch_dir)
+        if result.returncode != 0:
+            print(f"Error: Initialization command failed: '{cmd}'")
+            return False
+
+    print("Initialization completed successfully.")
+    return True
+
 def main():
     # Load arguments
     repo_name, repo_url, branch_name = get_args()
@@ -287,6 +314,10 @@ def main():
     # Ensure repo has a programs key
     if 'programs' not in config[repo_url]:
         config[repo_url]['programs'] = DEFAULT_PROGRAMS
+
+    # Ensure repo has an init key
+    if 'init' not in config[repo_url]:
+        config[repo_url]['init'] = []
 
     # Ensure branch exists in repo config
     if branch_name not in config[repo_url]['branches']:
@@ -309,12 +340,17 @@ def main():
     # Get programs to launch
     programs = get_programs(config, repo_url)
 
+    # Get initialization commands
+    init_commands = get_init_commands(config, repo_url)
+
     # Checkout directory
     branch_dir = f"./{repo_name}.{branch_name}"
     branch_dir_path = Path(branch_dir).resolve()
 
     # Create directory if it doesn't exist
+    is_new_repo = False
     if not os.path.exists(branch_dir):
+        is_new_repo = True
         os.makedirs(branch_dir)
 
         # Clone repo and checkout branch
@@ -337,6 +373,14 @@ def main():
 
         subprocess.run(['git', 'pull'], cwd=branch_dir, check=False)
 
+    # Run initialization commands for new repositories
+    if is_new_repo and init_commands:
+        if not run_init_commands(branch_dir, init_commands):
+            response = input("Initialization failed. Continue anyway? [y/N]: ")
+            if response.lower() != 'y':
+                print("Operation cancelled")
+                sys.exit(1)
+
     # Session name is just the branch name
     session_name = branch_name
 
@@ -358,3 +402,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

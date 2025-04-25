@@ -12,6 +12,7 @@ The intent is to assign each branch to a separate instance of an AI agent like C
 - Manage multiple branches across different repositories
 - Configure custom programs to run in each pane
 - Automatically assign ports to different branches
+- Run initialization commands for new repositories
 - Persist configuration between sessions
 
 ## Installation
@@ -34,7 +35,7 @@ The intent is to assign each branch to a separate instance of an AI agent like C
 
 ## Configuration
 
-Swarm uses a YAML configuration file (`swarm.yaml`) to store repository information, branch-to-port mappings, and programs to run.
+Swarm uses a YAML configuration file (`swarm.yaml`) to store repository information, branch-to-port mappings, programs to run, and initialization commands.
 
 Example configuration:
 
@@ -48,6 +49,9 @@ git@github.com:username/repo:
     - 'codex'
     - 'npm run dev'
     - 'python api/server.py'
+  init:
+    - 'npm install'
+    - 'pip install -r requirements.txt'
 ```
 
 ### Configuration Fields
@@ -57,6 +61,7 @@ git@github.com:username/repo:
   - First command: Left pane (usually editor/shell)
   - Second command: Right top pane (usually frontend server)
   - Third command: Right bottom pane (usually backend/API server)
+- `init`: List of commands to run when setting up a new repository
 
 If fewer than 3 programs are specified, `codex` will be used for the remaining panes.
 
@@ -66,9 +71,10 @@ If fewer than 3 programs are specified, `codex` will be used for the remaining p
 2. If not, it assigns a new port number and adds it to the configuration
 3. It creates a directory for the repository/branch if it doesn't exist
 4. It clones the repository and checks out the branch
-5. It creates or updates a tmux session with three panes
-6. It launches the configured programs in each pane
-7. Finally, it attaches to the tmux session
+5. For new repositories, it runs the initialization commands (and asks to continue if any fail)
+6. It creates or updates a tmux session with three panes
+7. It launches the configured programs in each pane
+8. Finally, it attaches to the tmux session
 
 ## Default Setup
 
@@ -81,6 +87,7 @@ By default, Swarm creates a tmux session with:
 ## Tips
 
 - Customize the programs for each repository in the YAML config file
+- Add initialization commands to automate repository setup
 - Use branch-specific configurations when needed
 - If already in a tmux session, Swarm will switch to the new session rather than nesting
 
