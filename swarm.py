@@ -65,52 +65,132 @@ def session_exists(session_name):
     """Check if a tmux session exists."""
     return tmux.has_session(session_name)
 
-def create_or_update_session(branch_dir, session_name):
-    """Create or update a tmux session."""
-    # Create session if it doesn't exist
-    if not session_exists(session_name):
-        print(f"Creating new tmux session: {session_name}")
+def setup_tmux_session(branch_dir, session_name):
+    """Create a new tmux session and set up the window layout."""
+    print(f"Creating new tmux session: {session_name}")
 
-        # Create a new session with the shell
-        result1 = tmux.new_session(session_name, branch_dir)
+    # Create a new session with the shell
+    result1 = tmux.new_session(session_name, branch_dir)
+    if result1.returncode != 0:
+        print(f"Error creating session: {result1.stderr}")
+        return False
 
-        # Rename the window to 'codex'
-        tmux.rename_window(f'{session_name}:0', 'codex')
+    # Rename the window to 'codex'
+    tmux.rename_window(f'{session_name}:0', 'codex')
 
-        # Send the codex command to the shell
-        tmux.send_keys(f'{session_name}:0', 'codex')
+    # List panes to debug
+    panes_result = tmux.list_panes(session_name)
+    print(f"Initial panes: {panes_result.stdout}")
 
-        if result1.returncode != 0:
-            print(f"Error creating session: {result1.stderr}")
-            return
+    # Add a small delay to ensure the session is fully initialized
+    time.sleep(1)
+
+    # Create second window pane (use explicit target for first pane)
+    result2 = tmux.split_window(f'{session_name}:0.0', '-h', branch_dir)
+    if result2.returncode != 0:
+        print(f"Error creating second pane: {result2.stderr}")
+        # Try to create the pane again with just the session name
+        result2b = tmux.split_window(session_name, '-h', branch_dir)
+        if result2b.returncode != 0:
+            print(f"Second attempt failed: {result2b.stderr}")
+            return False
+
+    # List panes to debug after first split
+    panes_result2 = tmux.list_panes(session_name, '#{pane_index}')
+    print(f"Panes after first split: {panes_result2.stdout}")
+
+    # Add a small delay between pane creations
+    time.sleep(1)
+
+    # For the third pane, check if pane 1 exists, otherwise use session name
+    if '1' in panes_result2.stdout:
+        target = f'{session_name}.1'
+    else:
+        # Just use the session name and let tmux figure it out
+        target = session_name
+
+    # Try all possible pane targets for the third pane
+    result3 = tmux.split_window(target, '-v', branch_dir)
+    if result3.returncode != 0:
+        print(f"First vertical split attempt failed, trying left pane: {result3.stderr}")
+        result3b = tmux.split_window(f'{session_name}:0.0', '-v', branch_dir)
+
+        if result3b.returncode != 0:
+            print(f"Second vertical split attempt failed, trying session: {result3b.stderr}")
+            # Try with just the session name
+            result3c = tmux.split_window(session_name, '-v', branch_dir)
+
+            if result3c.returncode != 0:
+                print(f"All vertical split attempts failed: {result3c.stderr}")
+                return False
+
+    # Select the left pane (codex)
+    tmux.select_pane(f'{session_name}:0.0')
+    return True
+
+def launch_programs(session_name):
+    """Launch programs in the tmux panes."""
+    # Launch codex in the first pane
+    tmux.send_keys(f'{session_name}:0.0', 'codex')
+
+    # Launch vite in the second pane
+    tmux.send_keys(f'{session_name}:0.1', 'APP=mn vite')
+
+    # Launch tcode-server in the third pane
+    tmux.send_keys(f'{session_name}:0.2', 'APP=mn python api/tcode-server.py')
+
+def restart_programs(session_name):
+    """Restart programs in the tmux panes."""
+    # Restart codex in the first pane
+    tmux.send_keys(f'{session_name}:0.0', 'C-c', False)
+    tmux.send_keys(f'{session_name}:0.0', 'clear')
+    tmux.send_keys(f'{session_name}:0.0', 'codex')
+
+    # Restart vite in the second pane
+    tmux.send_keys(f'{session_name}:0.1', 'C-c', False)
+    tmux.send_keys(f'{session_name}:0.1', 'clear')
+    tmux.send_keys(f'{session_name}:0.1', 'APP=mn vite')
+
+    # Restart tcode-server in the third pane
+    tmux.send_keys(f'{session_name}:0.2', 'C-c', False)
+    tmux.send_keys(f'{session_name}:0.2', 'clear')
+    tmux.send_keys(f'{session_name}:0.2', 'APP=mn python api/tcode-server.py')
+
+def reset_session_layout(session_name, branch_dir):
+    """Reset the session layout to ensure it has exactly three panes."""
+    # First check if the session has the right number of panes
+    result = tmux.list_panes(session_name, '#{pane_index}')
+    panes = result.stdout.strip().split('\n')
+
+    # Kill existing panes if layout is wrong
+    if len(panes) != 3:
+        # Kill all panes except the first one
+        for pane in panes[1:]:
+            try:
+                tmux.kill_pane(f'{session_name}.{pane}')
+            except Exception:
+                pass
 
         # List panes to debug
-        panes_result = tmux.list_panes(session_name)
-        print(f"Initial panes: {panes_result.stdout}")
+        panes_result = tmux.list_panes(session_name, '#{pane_index}')
+        print(f"Initial panes (update): {panes_result.stdout}")
 
-        # Add a small delay to ensure the session is fully initialized
+        # Add a small delay to ensure commands complete
         time.sleep(1)
 
-        # Create second window pane for vite (use explicit target for first pane)
+        # Add panes for vite and API
         result2 = tmux.split_window(f'{session_name}:0.0', '-h', branch_dir)
-
-        # Send the vite command to the shell
-        tmux.send_keys(f'{session_name}:0.1', 'APP=mn vite')
-
         if result2.returncode != 0:
-            print(f"Error creating vite pane: {result2.stderr}")
+            print(f"Error creating vite pane (update): {result2.stderr}")
             # Try to create the pane again with just the session name
             result2b = tmux.split_window(session_name, '-h', branch_dir)
-
-            # Send the vite command to the new shell
-            tmux.send_keys(f'{session_name}:0.1', 'APP=mn vite')
             if result2b.returncode != 0:
-                print(f"Second attempt failed: {result2b.stderr}")
-                return
+                print(f"Second attempt failed (update): {result2b.stderr}")
+                return False
 
         # List panes to debug after first split
         panes_result2 = tmux.list_panes(session_name, '#{pane_index}')
-        print(f"Panes after first split: {panes_result2.stdout}")
+        print(f"Panes after first split (update): {panes_result2.stdout}")
 
         # Add a small delay between pane creations
         time.sleep(1)
@@ -124,130 +204,39 @@ def create_or_update_session(branch_dir, session_name):
 
         # Try all possible pane targets for the third pane
         result3 = tmux.split_window(target, '-v', branch_dir)
-
-        # Send the tcode-server command to the shell
-        tmux.send_keys(f'{session_name}:0.2', 'APP=mn python api/tcode-server.py')
-
-        # If that failed, try splitting the left pane
         if result3.returncode != 0:
-            print(f"First vertical split attempt failed, trying left pane: {result3.stderr}")
+            print(f"First vertical split attempt failed (update), trying left pane: {result3.stderr}")
             result3b = tmux.split_window(f'{session_name}:0.0', '-v', branch_dir)
 
-            # Send the tcode-server command to the shell
-            tmux.send_keys(f'{session_name}:0.2', 'APP=mn python api/tcode-server.py')
-
             if result3b.returncode != 0:
-                print(f"Second vertical split attempt failed, trying session: {result3b.stderr}")
+                print(f"Second vertical split attempt failed (update), trying session: {result3b.stderr}")
                 # Try with just the session name
                 result3c = tmux.split_window(session_name, '-v', branch_dir)
 
-                # Send the tcode-server command to the shell
-                tmux.send_keys(f'{session_name}:0.2', 'APP=mn python api/tcode-server.py')
-
                 if result3c.returncode != 0:
-                    print(f"All vertical split attempts failed: {result3c.stderr}")
+                    print(f"All vertical split attempts failed (update): {result3c.stderr}")
+                    return False
 
-        # Select the left pane (codex)
-        tmux.select_pane(f'{session_name}:0.0')
+    # Select the left pane (codex)
+    tmux.select_pane(f'{session_name}:0.0')
+    return True
+
+def create_or_update_session(branch_dir, session_name):
+    """Create or update a tmux session."""
+    # Create session if it doesn't exist
+    if not session_exists(session_name):
+        if not setup_tmux_session(branch_dir, session_name):
+            return
+
+        # After layout is set up, launch programs
+        launch_programs(session_name)
     else:
         # Session exists but we should ensure the correct layout and commands
+        if not reset_session_layout(session_name, branch_dir):
+            return
 
-        # First check if the session has the right number of panes
-        result = tmux.list_panes(session_name, '#{pane_index}')
-        panes = result.stdout.strip().split('\n')
-
-        # Kill existing panes if layout is wrong
-        if len(panes) != 3:
-            # Kill all panes except the first one
-            for pane in panes[1:]:
-                try:
-                    tmux.kill_pane(f'{session_name}.{pane}')
-                except Exception:
-                    pass
-
-            # Now we have only one pane, make sure it's running codex
-            tmux.send_keys(f'{session_name}.0', 'C-c', False)
-            tmux.send_keys(f'{session_name}.0', 'clear')
-            tmux.send_keys(f'{session_name}.0', 'codex')
-
-            # List panes to debug
-            panes_result = tmux.list_panes(session_name, '#{pane_index}')
-            print(f"Initial panes (update): {panes_result.stdout}")
-
-            # Add a small delay to ensure commands complete
-            time.sleep(1)
-
-            # Add panes for vite and API
-            result2 = tmux.split_window(f'{session_name}:0.0', '-h', branch_dir)
-
-            # Send the vite command to the shell
-            tmux.send_keys(f'{session_name}:0.1', 'APP=mn vite')
-
-            if result2.returncode != 0:
-                print(f"Error creating vite pane (update): {result2.stderr}")
-                # Try to create the pane again with just the session name
-                result2b = tmux.split_window(session_name, '-h', branch_dir)
-
-                # Send the vite command to the shell
-                tmux.send_keys(f'{session_name}:0.1', 'APP=mn vite')
-                if result2b.returncode != 0:
-                    print(f"Second attempt failed (update): {result2b.stderr}")
-                    return
-
-            # List panes to debug after first split
-            panes_result2 = tmux.list_panes(session_name, '#{pane_index}')
-            print(f"Panes after first split (update): {panes_result2.stdout}")
-
-            # Add a small delay between pane creations
-            time.sleep(1)
-
-            # For the third pane, check if pane 1 exists, otherwise use session name
-            if '1' in panes_result2.stdout:
-                target = f'{session_name}.1'
-            else:
-                # Just use the session name and let tmux figure it out
-                target = session_name
-
-            # Try all possible pane targets for the third pane
-            result3 = tmux.split_window(target, '-v', branch_dir)
-
-            # Send the tcode-server command to the shell
-            tmux.send_keys(f'{session_name}:0.2', 'APP=mn python api/tcode-server.py')
-
-            # If that failed, try splitting the left pane
-            if result3.returncode != 0:
-                print(f"First vertical split attempt failed (update), trying left pane: {result3.stderr}")
-                result3b = tmux.split_window(f'{session_name}:0.0', '-v', branch_dir)
-
-                # Send the tcode-server command to the shell
-                tmux.send_keys(f'{session_name}:0.2', 'APP=mn python api/tcode-server.py')
-
-                if result3b.returncode != 0:
-                    print(f"Second vertical split attempt failed (update), trying session: {result3b.stderr}")
-                    # Try with just the session name
-                    result3c = tmux.split_window(session_name, '-v', branch_dir)
-
-                    # Send the tcode-server command to the shell
-                    tmux.send_keys(f'{session_name}:0.2', 'APP=mn python api/tcode-server.py')
-
-                    if result3c.returncode != 0:
-                        print(f"All vertical split attempts failed (update): {result3c.stderr}")
-        else:
-            # Send commands to ensure correct programs are running
-            tmux.send_keys(f'{session_name}:0.0', 'C-c', False)
-            tmux.send_keys(f'{session_name}:0.0', 'clear')
-            tmux.send_keys(f'{session_name}:0.0', 'codex')
-
-            tmux.send_keys(f'{session_name}:0.1', 'C-c', False)
-            tmux.send_keys(f'{session_name}:0.1', 'clear')
-            tmux.send_keys(f'{session_name}:0.1', 'APP=mn vite')
-
-            tmux.send_keys(f'{session_name}:0.2', 'C-c', False)
-            tmux.send_keys(f'{session_name}:0.2', 'clear')
-            tmux.send_keys(f'{session_name}:0.2', 'APP=mn python api/tcode-server.py')
-
-        # Select the left pane (codex)
-        tmux.select_pane(f'{session_name}:0.0')
+        # After layout is reset, restart programs
+        restart_programs(session_name)
 
 def find_next_available_port(used_ports):
     """Find the next available port in the range 5000-6000 with gaps of 10."""
