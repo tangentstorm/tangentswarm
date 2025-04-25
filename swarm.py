@@ -342,8 +342,8 @@ def main():
                 print("Operation cancelled")
                 sys.exit(1)
 
-    # Session name is just the branch name
-    session_name = branch_name
+    # Session name includes the port number: PORT/branch_name
+    session_name = f"{branch_port}/{branch_name}"
 
     # Check if the session already exists
     if session_exists(session_name):

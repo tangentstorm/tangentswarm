@@ -15,6 +15,7 @@ The intent is to assign each branch to a separate instance of an AI agent like C
 - Run initialization commands for new repositories
 - Support for dynamic port substitution in commands
 - Persist configuration between sessions
+- Easy identification of sessions with port/branch naming
 
 ## Installation
 
@@ -36,7 +37,7 @@ The intent is to assign each branch to a separate instance of an AI agent like C
 
 ## Configuration
 
-Swarm uses a YAML configuration file (`swarm.yaml`) to store repository information, branch-to-port mappings, programs to run, and initialization commands.
+TangentSwarm uses a YAML configuration file (`swarm.yaml`) to store repository information, branch-to-port mappings, programs to run, and initialization commands.
 
 Example configuration:
 
@@ -63,6 +64,19 @@ git@github.com:username/repo:
   - Subsequent commands use layout prefixes to determine window/pane arrangement
 - `init`: List of commands to run when setting up a new repository
 
+### Session Naming
+
+TangentSwarm uses a naming convention for tmux sessions that includes both the port number and branch name:
+```
+PORT/branch_name
+```
+
+For example:
+- `5000/main`
+- `5010/feature-branch`
+
+This makes it easy to identify which port is associated with each branch in the tmux session list.
+
 ### Layout Prefixes
 
 Each command in the `programs` list (except the first one) can have a layout prefix:
@@ -74,10 +88,10 @@ Each command in the `programs` list (except the first one) can have a layout pre
 Examples:
 ```yaml
 programs:
-  - 'codex'                                    # First pane of initial window
-  - '| vite --port=${PORT}'                    # Horizontal split (side by side)
-  - '~ python api/server.py --port=${PORT+1}'  # Vertical split in the second pane
-  - '* npm test'                               # New window
+  - 'codex'                                  # First pane of initial window
+  - '| vite --port=${PORT}'                  # Horizontal split (side by side)
+  - '~ python api/server.py --port=${PORT+1}' # Vertical split in the second pane
+  - '* npm test'                             # New window
 ```
 
 ### Port Variable Substitution
@@ -101,7 +115,7 @@ If the branch's port is 5000, this will run:
 
 ## How It Works
 
-1. Swarm checks if the requested branch exists in the configuration file
+1. TangentSwarm checks if the requested branch exists in the configuration file
 2. If not, it assigns a new port number and adds it to the configuration
 3. It creates a directory for the repository/branch if it doesn't exist
 4. It clones the repository and checks out the branch
@@ -112,7 +126,7 @@ If the branch's port is 5000, this will run:
 
 ## Default Setup
 
-By default, if no layout prefixes are specified, Swarm will create a new window for each command:
+By default, if no layout prefixes are specified, TangentSwarm will create a new window for each command:
 
 1. Initial pane: First command (default: `codex`)
 2. Window 1: Second command
@@ -124,7 +138,10 @@ By default, if no layout prefixes are specified, Swarm will create a new window 
 - Add initialization commands to automate repository setup
 - Use branch-specific configurations when needed
 - Use port variables to ensure services use the correct ports
-- If already in a tmux session, Swarm will switch to the new session rather than nesting
+- If already in a tmux session, TangentSwarm will switch to the new session rather than nesting
+- Use `tmux ls` to view all running sessions with their port numbers
+- Use `set -g status-left-length 50` to increase the length of the tmux session name display
+
 
 ## Requirements
 
