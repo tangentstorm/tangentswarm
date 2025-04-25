@@ -13,6 +13,7 @@ The intent is to assign each branch to a separate instance of an AI agent like C
 - Configure custom programs to run in each pane
 - Automatically assign ports to different branches
 - Run initialization commands for new repositories
+- Support for dynamic port substitution in commands
 - Persist configuration between sessions
 
 ## Installation
@@ -47,8 +48,8 @@ git@github.com:username/repo:
     feature2: 5020
   programs:
     - 'codex'
-    - 'npm run dev'
-    - 'python api/server.py'
+    - 'npm run dev --port=${PORT}'
+    - 'python api/server.py --port=${PORT+1}'
   init:
     - 'npm install'
     - 'pip install -r requirements.txt'
@@ -65,6 +66,25 @@ git@github.com:username/repo:
 
 If fewer than 3 programs are specified, `codex` will be used for the remaining panes.
 
+### Port Variable Substitution
+
+You can use the following variables in your commands:
+- `${PORT}`: Will be replaced with the branch's assigned port number
+- `${PORT+n}`: Will be replaced with the branch's port plus n (where n is a digit 0-9)
+
+Example:
+```yaml
+programs:
+  - 'codex'
+  - 'vite --port=${PORT}'
+  - 'flask run --port=${PORT+1}'
+```
+
+If the branch's port is 5000, this will run:
+- `codex` in the first pane
+- `vite --port=5000` in the second pane
+- `flask run --port=5001` in the third pane
+
 ## How It Works
 
 1. Swarm checks if the requested branch exists in the configuration file
@@ -73,7 +93,7 @@ If fewer than 3 programs are specified, `codex` will be used for the remaining p
 4. It clones the repository and checks out the branch
 5. For new repositories, it runs the initialization commands (and asks to continue if any fail)
 6. It creates or updates a tmux session with three panes
-7. It launches the configured programs in each pane
+7. It launches the configured programs in each pane, substituting port variables
 8. Finally, it attaches to the tmux session
 
 ## Default Setup
@@ -89,6 +109,7 @@ By default, Swarm creates a tmux session with:
 - Customize the programs for each repository in the YAML config file
 - Add initialization commands to automate repository setup
 - Use branch-specific configurations when needed
+- Use port variables to ensure services use the correct ports
 - If already in a tmux session, Swarm will switch to the new session rather than nesting
 
 ## Requirements

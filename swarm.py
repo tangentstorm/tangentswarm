@@ -151,7 +151,24 @@ def get_init_commands(config, repo_url):
         return config[repo_url]['init']
     return []
 
-def launch_programs(session_name, programs):
+def replace_port_variables(command, port):
+    """Replace ${PORT} and ${PORT+n} variables in a command string."""
+    # Replace ${PORT} with the actual port
+    command = command.replace('${PORT}', str(port))
+
+    # Find and replace ${PORT+n} patterns
+    pattern = r'\${PORT\+(\d+)}'
+    matches = re.findall(pattern, command)
+
+    for offset in matches:
+        offset_value = int(offset)
+        if offset_value <= 9:  # Limit to single digits for simplicity
+            new_port = port + offset_value
+            command = command.replace(f'${{PORT+{offset}}}', str(new_port))
+
+    return command
+
+def launch_programs(session_name, programs, port):
     """Launch programs in the tmux panes."""
     # Check if we have enough programs defined
     if len(programs) < 3:
@@ -165,9 +182,11 @@ def launch_programs(session_name, programs):
 
     # Launch each program in its respective pane
     for i, program in enumerate(programs_to_run):
-        tmux.send_keys(f'{session_name}:0.{i}', program)
+        # Replace port variables in the command
+        command = replace_port_variables(program, port)
+        tmux.send_keys(f'{session_name}:0.{i}', command)
 
-def restart_programs(session_name, programs):
+def restart_programs(session_name, programs, port):
     """Restart programs in the tmux panes."""
     # Check if we have enough programs defined
     if len(programs) < 3:
@@ -181,9 +200,11 @@ def restart_programs(session_name, programs):
 
     # Restart each program in its respective pane
     for i, program in enumerate(programs_to_run):
+        # Replace port variables in the command
+        command = replace_port_variables(program, port)
         tmux.send_keys(f'{session_name}:0.{i}', 'C-c', False)
         tmux.send_keys(f'{session_name}:0.{i}', 'clear')
-        tmux.send_keys(f'{session_name}:0.{i}', program)
+        tmux.send_keys(f'{session_name}:0.{i}', command)
 
 def reset_session_layout(session_name, branch_dir):
     """Reset the session layout to ensure it has exactly three panes."""
@@ -250,7 +271,7 @@ def reset_session_layout(session_name, branch_dir):
     tmux.select_pane(f'{session_name}:0.0')
     return True
 
-def create_or_update_session(branch_dir, session_name, programs):
+def create_or_update_session(branch_dir, session_name, programs, port):
     """Create or update a tmux session."""
     # Create session if it doesn't exist
     if not session_exists(session_name):
@@ -258,14 +279,14 @@ def create_or_update_session(branch_dir, session_name, programs):
             return
 
         # After layout is set up, launch programs
-        launch_programs(session_name, programs)
+        launch_programs(session_name, programs, port)
     else:
         # Session exists but we should ensure the correct layout and commands
         if not reset_session_layout(session_name, branch_dir):
             return
 
         # After layout is reset, restart programs
-        restart_programs(session_name, programs)
+        restart_programs(session_name, programs, port)
 
 def find_next_available_port(used_ports):
     """Find the next available port in the range 5000-6000 with gaps of 10."""
@@ -280,8 +301,8 @@ def find_next_available_port(used_ports):
     # If all ports are used, start over from 5000 (shouldn't happen with this range)
     return 5000
 
-def run_init_commands(branch_dir, init_commands):
-    """Run initialization commands in the directory.
+def run_init_commands(branch_dir, init_commands, port):
+    """Run initialization commands in the directory with port substitution.
 
     Returns:
         bool: True if all commands succeeded, False otherwise.
@@ -291,10 +312,12 @@ def run_init_commands(branch_dir, init_commands):
 
     print("Running initialization commands...")
     for cmd in init_commands:
-        print(f"Executing: {cmd}")
-        result = subprocess.run(cmd, shell=True, cwd=branch_dir)
+        # Replace port variables in the command
+        processed_cmd = replace_port_variables(cmd, port)
+        print(f"Executing: {processed_cmd}")
+        result = subprocess.run(processed_cmd, shell=True, cwd=branch_dir)
         if result.returncode != 0:
-            print(f"Error: Initialization command failed: '{cmd}'")
+            print(f"Error: Initialization command failed: '{processed_cmd}'")
             return False
 
     print("Initialization completed successfully.")
@@ -320,6 +343,7 @@ def main():
         config[repo_url]['init'] = []
 
     # Ensure branch exists in repo config
+    branch_port = None
     if branch_name not in config[repo_url]['branches']:
         # Collect all used ports
         used_ports = set()
@@ -336,6 +360,10 @@ def main():
         # Add new branch with port
         config[repo_url]['branches'][branch_name] = port
         save_config(config)
+        branch_port = port
+    else:
+        # Use existing port for this branch
+        branch_port = config[repo_url]['branches'][branch_name]
 
     # Get programs to launch
     programs = get_programs(config, repo_url)
@@ -375,7 +403,7 @@ def main():
 
     # Run initialization commands for new repositories
     if is_new_repo and init_commands:
-        if not run_init_commands(branch_dir, init_commands):
+        if not run_init_commands(branch_dir, init_commands, branch_port):
             response = input("Initialization failed. Continue anyway? [y/N]: ")
             if response.lower() != 'y':
                 print("Operation cancelled")
@@ -385,7 +413,7 @@ def main():
     session_name = branch_name
 
     # Create or update the tmux session
-    create_or_update_session(branch_dir, session_name, programs)
+    create_or_update_session(branch_dir, session_name, programs, branch_port)
 
     # Check if we're already in a tmux session
     in_tmux = 'TMUX' in os.environ
@@ -402,4 +430,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
