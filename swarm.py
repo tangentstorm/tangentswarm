@@ -96,14 +96,13 @@ def extract_sigil_and_command(command_str):
     # Split the command to check for sigil prefix
     parts = command_str.split(' ', 1)
 
-    # Use match statement to determine the sigil and command
-    match parts:
-        case [potential_sigil, cmd] if potential_sigil in VALID_SIGILS:
-            # Valid sigil found with command
-            return (potential_sigil, cmd)
-        case _:
-            # No valid sigil or no command after sigil
-            return (SIGIL_NEW_WINDOW, command_str)
+    # Use conditional logic instead of match statement
+    if len(parts) == 2 and parts[0] in VALID_SIGILS:
+        # Valid sigil found with command
+        return (parts[0], parts[1])
+    else:
+        # No valid sigil or no command after sigil
+        return (SIGIL_NEW_WINDOW, command_str)
 
 def create_tmux_session(session_name, branch_dir):
     """Create a new tmux session."""
@@ -141,64 +140,10 @@ def setup_and_run_programs(session_name, branch_dir, programs, port):
 
         # Handle first command specially
         if i == 0:
-            match sigil:
-                case SIGIL_TMUX_COMMAND:
-                    # Run tmux command against this session
-                    tmux.run_tmux_command(session_name, cmd)
-                case SIGIL_NO_SHELL:
-                    # Create a temporary window to run the command
-                    temp_win = f"{session_name}:temp"
-                    tmux.new_window('-t', session_name, '-n', 'temp')
-                    # Run the command directly without a shell
-                    subprocess.run(cmd.split(), cwd=branch_dir)
-                    # Kill the temporary window when done
-                    tmux.kill_pane('-t', temp_win)
-                case _:
-                    # Regular command with shell in initial pane
-                    tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
-            continue
-
-        # Apply the sigil and run the command based on the type
-        match sigil:
-            case SIGIL_NEW_WINDOW:
-                # Create a new window
-                result = tmux.new_window('-t', f'{session_name}:{current_window+1}', '-c', branch_dir)
-                if result.returncode == 0:
-                    current_window += 1
-                    current_pane = 0
-                    # Rename the window based on the command (use first word)
-                    window_name = cmd.split()[0] if cmd else f"win{current_window}"
-                    tmux.rename_window(f'{session_name}:{current_window}', window_name)
-                    # Run the command in the new window
-                    tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
-                else:
-                    print(f"Failed to create new window: {result.stderr}")
-
-            case SIGIL_HORIZONTAL_SPLIT:
-                # Create a horizontal split (side by side)
-                result = tmux.split_window(f'{session_name}:{current_window}.{current_pane}', '-h', branch_dir)
-                if result.returncode == 0:
-                    current_pane += 1
-                    # Run the command in the new pane
-                    tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
-                else:
-                    print(f"Failed to create horizontal split: {result.stderr}")
-
-            case SIGIL_VERTICAL_SPLIT:
-                # Create a vertical split (one above the other)
-                result = tmux.split_window(f'{session_name}:{current_window}.{current_pane}', '-v', branch_dir)
-                if result.returncode == 0:
-                    current_pane += 1
-                    # Run the command in the new pane
-                    tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
-                else:
-                    print(f"Failed to create vertical split: {result.stderr}")
-
-            case SIGIL_TMUX_COMMAND:
+            if sigil == SIGIL_TMUX_COMMAND:
                 # Run tmux command against this session
                 tmux.run_tmux_command(session_name, cmd)
-
-            case SIGIL_NO_SHELL:
+            elif sigil == SIGIL_NO_SHELL:
                 # Create a temporary window to run the command
                 temp_win = f"{session_name}:temp"
                 tmux.new_window('-t', session_name, '-n', 'temp')
@@ -206,6 +151,58 @@ def setup_and_run_programs(session_name, branch_dir, programs, port):
                 subprocess.run(cmd.split(), cwd=branch_dir)
                 # Kill the temporary window when done
                 tmux.kill_pane('-t', temp_win)
+            else:
+                # Regular command with shell in initial pane
+                tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
+            continue
+
+        # Apply the sigil and run the command based on the type
+        if sigil == SIGIL_NEW_WINDOW:
+            # Create a new window
+            result = tmux.new_window('-t', f'{session_name}:{current_window+1}', '-c', branch_dir)
+            if result.returncode == 0:
+                current_window += 1
+                current_pane = 0
+                # Rename the window based on the command (use first word)
+                window_name = cmd.split()[0] if cmd else f"win{current_window}"
+                tmux.rename_window(f'{session_name}:{current_window}', window_name)
+                # Run the command in the new window
+                tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
+            else:
+                print(f"Failed to create new window: {result.stderr}")
+
+        elif sigil == SIGIL_HORIZONTAL_SPLIT:
+            # Create a horizontal split (side by side)
+            result = tmux.split_window(f'{session_name}:{current_window}.{current_pane}', '-h', branch_dir)
+            if result.returncode == 0:
+                current_pane += 1
+                # Run the command in the new pane
+                tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
+            else:
+                print(f"Failed to create horizontal split: {result.stderr}")
+
+        elif sigil == SIGIL_VERTICAL_SPLIT:
+            # Create a vertical split (one above the other)
+            result = tmux.split_window(f'{session_name}:{current_window}.{current_pane}', '-v', branch_dir)
+            if result.returncode == 0:
+                current_pane += 1
+                # Run the command in the new pane
+                tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
+            else:
+                print(f"Failed to create vertical split: {result.stderr}")
+
+        elif sigil == SIGIL_TMUX_COMMAND:
+            # Run tmux command against this session
+            tmux.run_tmux_command(session_name, cmd)
+
+        elif sigil == SIGIL_NO_SHELL:
+            # Create a temporary window to run the command
+            temp_win = f"{session_name}:temp"
+            tmux.new_window('-t', session_name, '-n', 'temp')
+            # Run the command directly without a shell
+            subprocess.run(cmd.split(), cwd=branch_dir)
+            # Kill the temporary window when done
+            tmux.kill_pane('-t', temp_win)
 
     # Select the first pane of the first window
     tmux.select_pane(f'{session_name}:0.0')
