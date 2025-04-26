@@ -29,6 +29,23 @@ def send_keys(target, keys, enter=True):
         cmd.append('Enter')
     return subprocess.run(cmd)
 
+def run_command(command):
+    """Run a command directly without a shell."""
+    return subprocess.run(command.split(), stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+def run_tmux_command(session_name, command):
+    """Run a tmux command against the specified session."""
+    # Prepend the session specification to the command
+    cmd = ['tmux'] + command.split()
+    # Add the target session if it's not already specified
+    if '-t' not in cmd:
+        cmd.extend(['-t', session_name])
+    return subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+def next_window(session_name):
+    """Switch to the next window in a session."""
+    return subprocess.run(['tmux', 'next-window', '-t', session_name])
+
 def list_panes(session_name, format_str=None):
     """List panes in a tmux session with optional format string."""
     cmd = ['tmux', 'list-panes', '-t', session_name]

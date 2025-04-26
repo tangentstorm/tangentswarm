@@ -20,7 +20,7 @@ The intent is to assign each branch to a separate instance of an AI agent like C
 ## Installation
 
 1. Clone this repository
-2. Make sure you have Python 3.6+ and tmux installed
+2. Make sure you have Python 3.10+ and tmux installed
 3. Ensure dependencies are installed: `pip install PyYAML`
 4. Make the script executable: `chmod +x swarm.py`
 5. Add to your PATH (optional, for easier access)
@@ -77,13 +77,15 @@ For example:
 
 This makes it easy to identify which port is associated with each branch in the tmux session list.
 
-### Layout Prefixes
+### Command Sigils
 
-Each command in the `programs` list (except the first one) can have a layout prefix:
+Each command in the `programs` list can have a sigil (special character prefix):
 
-- `*` - Create a new window (default if no prefix is specified)
+- `*` - Create a new window (default if no sigil is specified)
 - `|` - Create a horizontal split (side by side)
 - `~` - Create a vertical split (one above the other)
+- `@` - Run a tmux command against this session (e.g., `@ next-window`)
+- `!` - Run command without a shell (creates a temporary window that closes when done)
 
 Examples:
 ```yaml
@@ -92,7 +94,11 @@ programs:
   - '| vite --port=${PORT}'                  # Horizontal split (side by side)
   - '~ python api/server.py --port=${PORT+1}' # Vertical split in the second pane
   - '* npm test'                             # New window
+  - '@ next-window'                          # Run tmux command against session
+  - '! make build'                           # Run command without shell
 ```
+
+To switch to the next window after setup, you can add `@ next-window` to your program list.
 
 ### Port Variable Substitution
 
@@ -145,7 +151,7 @@ By default, if no layout prefixes are specified, TangentSwarm will create a new 
 
 ## Requirements
 
-- Python 3.6+
+- Python 3.10+ (required for match/case statements)
 - tmux
 - PyYAML
 - Git
