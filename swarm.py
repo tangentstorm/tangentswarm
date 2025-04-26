@@ -472,37 +472,63 @@ def main():
         print(f"Cloning repository {repo_url} into {branch_dir}")
         git.clone(repo_url, branch_dir)
 
-        # Checkout the requested branch
-        if not checkout_branch(branch_dir, branch_name):
-            response = input("Branch checkout failed. Continue anyway? [y/N]: ")
-            if response.lower() != 'y':
-                print("Operation cancelled")
-                sys.exit(1)
+        # Get the default branch that was checked out by the clone
+        default_branch = git.branch_show_current(cwd=branch_dir).stdout.strip()
+        print(f"Repository's default branch is: {default_branch}")
+
+        # If default branch doesn't match requested branch, checkout the requested branch
+        if default_branch != branch_name:
+            print(f"Switching from default branch '{default_branch}' to requested branch '{branch_name}'")
+            if not checkout_branch(branch_dir, branch_name):
+                response = input("Branch checkout failed. Continue with default branch? [y/N]: ")
+                if response.lower() != 'y':
+                    print("Operation cancelled")
+                    sys.exit(1)
+        else:
+            print(f"Default branch already matches requested branch: {branch_name}")
+            # Ensure tracking is properly set up
+            setup_tracking(branch_dir, branch_name)
 
         # Pull latest changes
         pull_branch(branch_dir, branch_name)
     else:
-        # For existing repositories, make sure we checkout the correct branch
+        # For existing repositories, check if current branch matches requested branch
         print(f"Using existing repository at {branch_dir}")
 
         # Get current branch
         current_branch = git.branch_show_current(cwd=branch_dir).stdout.strip()
 
-        # If we're not on the requested branch, checkout it out
+        # If we're not on the requested branch, ask the user what to do
         if current_branch != branch_name:
-            print(f"Current branch is '{current_branch}', switching to '{branch_name}'")
-            if not checkout_branch(branch_dir, branch_name):
-                response = input("Branch checkout failed. Continue with current branch? [y/N]: ")
-                if response.lower() != 'y':
-                    print("Operation cancelled")
-                    sys.exit(1)
+            print(f"Current branch is '{current_branch}', but requested branch is '{branch_name}'")
+            response = input(f"Switch to '{branch_name}' branch? [Y/n]: ")
+
+            if response.lower() not in ['n', 'no']:
+                # User wants to switch branches
+                print(f"Switching to '{branch_name}'")
+                if not checkout_branch(branch_dir, branch_name):
+                    response = input("Branch checkout failed. Continue with current branch? [y/N]: ")
+                    if response.lower() != 'y':
+                        print("Operation cancelled")
+                        sys.exit(1)
+                # Pull latest changes for the new branch
+                pull_branch(branch_dir, branch_name)
+            else:
+                # User wants to stay on current branch
+                print(f"Keeping current branch: '{current_branch}'")
+                # Use the current branch name instead of requested branch
+                # for all subsequent operations including session naming
+                branch_name = current_branch
+                # Ensure tracking is properly set up
+                setup_tracking(branch_dir, branch_name)
+                # Pull latest changes for current branch
+                pull_branch(branch_dir, branch_name)
         else:
             print(f"Already on branch '{branch_name}'")
             # Even if already on the branch, ensure tracking is properly set up
             setup_tracking(branch_dir, branch_name)
-
-        # Always pull the latest changes
-        pull_branch(branch_dir, branch_name)
+            # Pull latest changes
+            pull_branch(branch_dir, branch_name)
 
     # Run initialization commands for new repositories
     if is_new_repo and init_commands:
