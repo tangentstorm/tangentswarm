@@ -8,6 +8,7 @@ import re
 import shutil
 from pathlib import Path
 import tmux
+import git
 
 CONFIG_FILE = 'swarm.yaml'
 
@@ -287,29 +288,13 @@ def run_init_commands(branch_dir, init_commands, port):
 
 def branch_exists_on_remote(branch_dir, branch_name):
     """Check if a branch exists on the remote."""
-    result = subprocess.run(['git', 'ls-remote', '--heads', 'origin', branch_name],
-                          cwd=branch_dir,
-                          capture_output=True,
-                          text=True,
-                          check=True)
+    result = git.remote_branches('origin', branch_name, cwd=branch_dir)
     return bool(result.stdout.strip())
 
 def configure_upstream(branch_dir, branch_name):
     """Configure branch's upstream without pushing."""
     print(f"Configuring branch '{branch_name}' to track origin/{branch_name} (tracking only, no push)")
-
-    # Configure the branch to track origin/branch_name
-    subprocess.run(['git', 'config', f'branch.{branch_name}.remote', 'origin'],
-                  cwd=branch_dir,
-                  stderr=subprocess.DEVNULL,
-                  stdout=subprocess.DEVNULL,
-                  check=False)
-
-    subprocess.run(['git', 'config', f'branch.{branch_name}.merge', f'refs/heads/{branch_name}'],
-                  cwd=branch_dir,
-                  stderr=subprocess.DEVNULL,
-                  stdout=subprocess.DEVNULL,
-                  check=False)
+    git.set_upstream_tracking(branch_name, 'origin', cwd=branch_dir)
 
 def checkout_branch(branch_dir, branch_name):
     """Checkout the specified branch, handling various edge cases.
@@ -320,30 +305,21 @@ def checkout_branch(branch_dir, branch_name):
     print(f"Checking out branch '{branch_name}'...")
 
     # First check if branch exists locally
-    local_branches = subprocess.run(['git', 'branch'],
-                                  cwd=branch_dir,
-                                  capture_output=True,
-                                  text=True,
-                                  check=True).stdout
+    local_branches = git.branch_list(cwd=branch_dir).stdout
 
     # Check if the branch exists locally
     branch_exists_locally = any(b.strip().replace('* ', '') == branch_name for b in local_branches.splitlines())
 
     if branch_exists_locally:
         # Checkout existing local branch
-        result = subprocess.run(['git', 'checkout', branch_name],
-                              cwd=branch_dir,
-                              stderr=subprocess.PIPE,
-                              stdout=subprocess.PIPE,
-                              text=True,
-                              check=False)
+        result = git.checkout(branch_name, cwd=branch_dir)
 
         if result.returncode != 0:
             print(f"Error checking out local branch: {result.stderr}")
             return False
 
         print(f"Successfully checked out local branch '{branch_name}'")
-
+        
         # Ensure tracking is set up
         setup_tracking(branch_dir, branch_name)
         return True
@@ -351,12 +327,7 @@ def checkout_branch(branch_dir, branch_name):
     # Check if branch exists on remote
     if branch_exists_on_remote(branch_dir, branch_name):
         # Branch exists on remote, create tracking branch
-        result = subprocess.run(['git', 'checkout', '-b', branch_name, '--track', f'origin/{branch_name}'],
-                              cwd=branch_dir,
-                              stderr=subprocess.PIPE,
-                              stdout=subprocess.PIPE,
-                              text=True,
-                              check=False)
+        result = git.checkout_track_branch(branch_name, f'origin/{branch_name}', cwd=branch_dir)
 
         if result.returncode != 0:
             print(f"Error creating tracking branch: {result.stderr}")
@@ -370,19 +341,14 @@ def checkout_branch(branch_dir, branch_name):
     print(f"Creating new branch '{branch_name}' based on current branch")
 
     # Create new branch from current branch
-    result = subprocess.run(['git', 'checkout', '-b', branch_name],
-                          cwd=branch_dir,
-                          stderr=subprocess.PIPE,
-                          stdout=subprocess.PIPE,
-                          text=True,
-                          check=False)
+    result = git.checkout_new_branch(branch_name, cwd=branch_dir)
 
     if result.returncode != 0:
         print(f"Error creating new branch: {result.stderr}")
         return False
 
     print(f"Successfully created new branch '{branch_name}'")
-
+    
     # Configure branch to track origin/branch_name without pushing
     configure_upstream(branch_dir, branch_name)
     return True
@@ -390,28 +356,20 @@ def checkout_branch(branch_dir, branch_name):
 def setup_tracking(branch_dir, branch_name):
     """Check if branch has tracking info, and if not, set it up."""
     # First check if tracking is already set up
-    branch_info = subprocess.run(['git', 'branch', '-vv'],
-                               cwd=branch_dir,
-                               capture_output=True,
-                               text=True,
-                               check=True).stdout
-
+    branch_info = git.branch_verbose(cwd=branch_dir).stdout
+    
     # Look for branch name with tracking info (inside square brackets)
     pattern = re.compile(rf'[* ] {re.escape(branch_name)}\s+[0-9a-f]+ \[')
     tracking_set = bool(pattern.search(branch_info))
-
+    
     if tracking_set:
         return
-
+    
     # If no tracking is set, check if the branch exists on remote
     if branch_exists_on_remote(branch_dir, branch_name):
         # Set up tracking to origin/branch_name
         print(f"Setting upstream for branch '{branch_name}' to origin/{branch_name}")
-        subprocess.run(['git', 'branch', '--set-upstream-to', f'origin/{branch_name}'],
-                      cwd=branch_dir,
-                      stderr=subprocess.DEVNULL,
-                      stdout=subprocess.DEVNULL,
-                      check=False)
+        git.branch_set_upstream(branch_name, f'origin/{branch_name}', cwd=branch_dir)
     else:
         # Branch doesn't exist on remote, just configure upstream without pushing
         configure_upstream(branch_dir, branch_name)
@@ -419,17 +377,13 @@ def setup_tracking(branch_dir, branch_name):
 def pull_branch(branch_dir, branch_name):
     """Pull latest changes for a branch, handling branches without tracking info."""
     print("Pulling latest changes...")
-
+    
     # Ensure tracking is set up for the branch
     setup_tracking(branch_dir, branch_name)
-
+    
     # Try a normal pull
-    result = subprocess.run(['git', 'pull', '--ff-only'],
-                          cwd=branch_dir,
-                          capture_output=True,
-                          text=True,
-                          check=False)
-
+    result = git.pull(cwd=branch_dir, ff_only=True)
+    
     # If successful, we're done
     if result.returncode == 0:
         if "Already up to date" in result.stdout:
@@ -497,7 +451,7 @@ def main():
 
         # Clone repo
         print(f"Cloning repository {repo_url} into {branch_dir}")
-        subprocess.run(['git', 'clone', repo_url, branch_dir], check=True)
+        git.clone(repo_url, branch_dir)
 
         # Checkout the requested branch
         if not checkout_branch(branch_dir, branch_name):
@@ -513,11 +467,7 @@ def main():
         print(f"Using existing repository at {branch_dir}")
 
         # Get current branch
-        current_branch = subprocess.run(['git', 'branch', '--show-current'],
-                                      cwd=branch_dir,
-                                      capture_output=True,
-                                      text=True,
-                                      check=True).stdout.strip()
+        current_branch = git.branch_show_current(cwd=branch_dir).stdout.strip()
 
         # If we're not on the requested branch, checkout it out
         if current_branch != branch_name:
