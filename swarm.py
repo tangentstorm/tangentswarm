@@ -319,7 +319,7 @@ def checkout_branch(branch_dir, branch_name):
             return False
 
         print(f"Successfully checked out local branch '{branch_name}'")
-        
+
         # Ensure tracking is set up
         setup_tracking(branch_dir, branch_name)
         return True
@@ -348,23 +348,42 @@ def checkout_branch(branch_dir, branch_name):
         return False
 
     print(f"Successfully created new branch '{branch_name}'")
-    
+
     # Configure branch to track origin/branch_name without pushing
     configure_upstream(branch_dir, branch_name)
     return True
+
+def get_session_name(branch_name, branch_port, repo_name):
+    """Generate the session name based on branch name.
+
+    For the 'main' branch, use format: repo_name/port
+    For other branches, use format: port/branch_name
+
+    Args:
+        branch_name: Name of the branch
+        branch_port: Port number assigned to the branch
+        repo_name: Name of the repository
+
+    Returns:
+        str: The formatted session name
+    """
+    if branch_name == 'main':
+        return f"{repo_name}/{branch_port}"
+    else:
+        return f"{branch_port}/{branch_name}"
 
 def setup_tracking(branch_dir, branch_name):
     """Check if branch has tracking info, and if not, set it up."""
     # First check if tracking is already set up
     branch_info = git.branch_verbose(cwd=branch_dir).stdout
-    
+
     # Look for branch name with tracking info (inside square brackets)
     pattern = re.compile(rf'[* ] {re.escape(branch_name)}\s+[0-9a-f]+ \[')
     tracking_set = bool(pattern.search(branch_info))
-    
+
     if tracking_set:
         return
-    
+
     # If no tracking is set, check if the branch exists on remote
     if branch_exists_on_remote(branch_dir, branch_name):
         # Set up tracking to origin/branch_name
@@ -377,13 +396,13 @@ def setup_tracking(branch_dir, branch_name):
 def pull_branch(branch_dir, branch_name):
     """Pull latest changes for a branch, handling branches without tracking info."""
     print("Pulling latest changes...")
-    
+
     # Ensure tracking is set up for the branch
     setup_tracking(branch_dir, branch_name)
-    
+
     # Try a normal pull
     result = git.pull(cwd=branch_dir, ff_only=True)
-    
+
     # If successful, we're done
     if result.returncode == 0:
         if "Already up to date" in result.stdout:
@@ -493,8 +512,8 @@ def main():
                 print("Operation cancelled")
                 sys.exit(1)
 
-    # Session name includes the port number: PORT/branch_name
-    session_name = f"{branch_port}/{branch_name}"
+    # Generate the session name using the helper function
+    session_name = get_session_name(branch_name, branch_port, repo_name)
 
     # Check if the session already exists
     if session_exists(session_name):
