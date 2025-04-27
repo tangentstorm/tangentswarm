@@ -251,10 +251,33 @@ def restart_session(session_name, branch_dir, programs, port):
     # Create a new session with the specified layout
     return setup_and_run_programs(session_name, branch_dir, programs, port)
 
+# Define Chrome's unsafe ports to avoid globally
+CHROME_UNSAFE_PORTS = [5060, 5061] + list(range(6000, 6064))
+
+def is_unsafe_port(port):
+    """Check if a port is considered unsafe by Chrome."""
+    return port in CHROME_UNSAFE_PORTS
+
+def check_for_unsafe_ports(config):
+    """Check configuration for any unsafe ports and warn the user.
+
+    Returns:
+        list: List of tuples (repo_url, branch_name, port) for each unsafe port found
+    """
+    unsafe_ports_found = []
+
+    for repo_url, repo_config in config.items():
+        if 'branches' in repo_config:
+            for branch_name, port in repo_config['branches'].items():
+                if is_unsafe_port(port):
+                    unsafe_ports_found.append((repo_url, branch_name, port))
+
+    return unsafe_ports_found
+
 def find_next_available_port(used_ports):
     """Find the next available port in the range 5000-6000 with gaps of 10."""
-    # Generate all possible ports in the range with gaps of 10
-    all_ports = list(range(5000, 6001, 10))
+    # Generate all possible ports in the range with gaps of 10, excluding unsafe ports
+    all_ports = [port for port in range(5000, 6001, 10) if not is_unsafe_port(port)]
 
     # Find the first available port that's not in used_ports
     for port in all_ports:
@@ -417,6 +440,15 @@ def main():
     # Load config
     config = load_config()
 
+    # Check for unsafe ports in the configuration
+    unsafe_ports = check_for_unsafe_ports(config)
+    if unsafe_ports:
+        print("\nWARNING: Chrome considers the following ports unsafe and will block connections:")
+        for repo_url, branch_name, port in unsafe_ports:
+            print(f"  * Port {port} for branch '{branch_name}' in repo '{repo_url}'")
+        print("These ports may cause issues with web services when accessed through Chrome.")
+        print("Consider changing these ports in your swarm.yaml file.\n")
+
     # Ensure repo has a branches key
     if 'branches' not in config[repo_url]:
         config[repo_url] = {'branches': {}}
@@ -441,7 +473,7 @@ def main():
                 # Handle legacy config format for backwards compatibility
                 used_ports.update(repo_config.values())
 
-        # Find next available port
+        # Find next available port (this will automatically avoid unsafe ports)
         port = find_next_available_port(used_ports)
 
         # Add new branch with port
@@ -451,6 +483,30 @@ def main():
     else:
         # Use existing port for this branch
         branch_port = config[repo_url]['branches'][branch_name]
+
+        # Check if this branch's port is unsafe
+        if is_unsafe_port(branch_port):
+            print(f"\nWARNING: The port {branch_port} assigned to branch '{branch_name}' is considered unsafe by Chrome.")
+            print("Chrome will block connections to this port, which may cause issues with web services.")
+            response = input("Would you like to reassign to a safe port? [Y/n]: ")
+
+            if response.lower() not in ['n', 'no']:
+                # Collect all used ports except the current one
+                used_ports = set()
+                for r_url, r_config in config.items():
+                    if 'branches' in r_config:
+                        for b_name, b_port in r_config['branches'].items():
+                            if not (r_url == repo_url and b_name == branch_name):
+                                used_ports.add(b_port)
+
+                # Find a new safe port
+                new_port = find_next_available_port(used_ports)
+                print(f"Reassigning port from {branch_port} to {new_port}")
+
+                # Update config
+                config[repo_url]['branches'][branch_name] = new_port
+                save_config(config)
+                branch_port = new_port
 
     # Get programs to launch
     programs = get_programs(config, repo_url)
