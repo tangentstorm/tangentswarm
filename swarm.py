@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 import os
 import sys
 import yaml
@@ -43,7 +43,7 @@ def load_config():
 def save_config(config):
     """Save configuration to YAML file."""
     with open(CONFIG_FILE, 'w') as f:
-        yaml.dump(config, f, default_flow_style=False)
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 def get_args():
     """Parse command line arguments and return repo_name, repo_url, and branch_name."""
