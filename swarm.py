@@ -379,8 +379,8 @@ def checkout_branch(branch_dir, branch_name):
 def get_session_name(branch_name, branch_port, repo_name):
     """Generate the session name based on branch name.
 
-    For the 'main' branch, use format: repo_name/port
-    For other branches, use format: port/branch_name
+    Use consistent format: port/branch_name for all branches
+    For 'main' branch, use the repo_name instead of 'main'
 
     Args:
         branch_name: Name of the branch
@@ -391,7 +391,7 @@ def get_session_name(branch_name, branch_port, repo_name):
         str: The formatted session name
     """
     if branch_name == 'main':
-        return f"{repo_name}/{branch_port}"
+        return f"{branch_port}/{repo_name}"
     else:
         return f"{branch_port}/{branch_name}"
 
