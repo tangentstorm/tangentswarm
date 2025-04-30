@@ -45,6 +45,10 @@ TangentSwarm uses a YAML configuration file (`~/.swarm.yaml`) in your home direc
 Example configuration:
 
 ```yaml
+# Global swarm configuration
+swarm:
+  root: ~/projects  # Root directory for all branch directories
+
 git@github.com:username/repo:
   branches:
     main: 5000
@@ -71,6 +75,8 @@ git@github.com:username/repo:
 
 ### Configuration Fields
 
+- `swarm`: Global configuration options
+  - `root`: Root directory where all branch directories will be created (e.g. `~/projects`)
 - `branches`: Maps branch names to port numbers or configuration dictionaries
   - Simple port format: `branch_name: port_number`
   - Advanced format with environment: `branch_name: { port: port_number, env: { KEY: VALUE } }`

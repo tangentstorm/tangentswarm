@@ -46,6 +46,9 @@ def load_config():
 
     # If no config files found, return default config
     return {
+        'swarm': {
+            'root': '.'  # Default to current directory
+        },
         'example_repo': {
             'branches': {
                 'main': 5000
@@ -333,6 +336,17 @@ def is_unsafe_port(port):
     """Check if a port is considered unsafe by Chrome."""
     return port in CHROME_UNSAFE_PORTS
 
+def get_swarm_root(config):
+    """Get the root directory for branch directories from the config.
+
+    Looks for swarm.root in the configuration. If not found, defaults to current directory.
+    The root is expanded to handle ~ for the user's home directory.
+    """
+    if 'swarm' in config and 'root' in config['swarm']:
+        # Expand any ~ in the path to the user's home directory
+        return os.path.expanduser(config['swarm']['root'])
+    return '.'  # Default to current directory
+
 def get_branch_port(config, repo_url, branch_name):
     """Extract port from branch configuration, which can be an integer or a dictionary with a 'port' key."""
     branch_config = config[repo_url]['branches'][branch_name]
@@ -564,8 +578,15 @@ def show_branch_status():
         # Silently handle the case where tmux is not running
         pass
 
+    # Get root directory from config
+    root_dir = get_swarm_root(config)
+
     # Go through each repo in the config
     for repo_url, repo_config in config.items():
+        # Skip the swarm config entry
+        if repo_url == 'swarm':
+            continue
+
         repo_name = repo_url.split('/')[-1].split('.')[0]
 
         # Track if any branch in this repo is active
@@ -575,7 +596,7 @@ def show_branch_status():
         # Go through each branch in the repo
         if 'branches' in repo_config:
             for branch_name in repo_config['branches'].keys():
-                branch_dir = f"./{repo_name}.{branch_name}"
+                branch_dir = os.path.join(root_dir, f"{repo_name}.{branch_name}")
 
                 # Check if the directory exists
                 if os.path.exists(branch_dir):
@@ -857,8 +878,11 @@ def main():
         # Get combined environment variables
         combined_env = get_combined_env(config, repo_url, branch_name)
 
+        # Get root directory from config
+        root_dir = get_swarm_root(config)
+
         # Checkout directory
-        branch_dir = f"./{repo_name}.{branch_name}"
+        branch_dir = os.path.join(root_dir, f"{repo_name}.{branch_name}")
         branch_dir_path = Path(branch_dir).resolve()
 
         # Create directory if it doesn't exist
