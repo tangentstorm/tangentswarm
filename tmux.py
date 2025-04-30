@@ -93,3 +93,10 @@ def kill_session(*args):
     cmd = ['tmux', 'kill-session']
     cmd.extend(args)
     return subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+
+def list_sessions(format_str=None):
+    """List all tmux sessions with optional format string."""
+    cmd = ['tmux', 'list-sessions']
+    if format_str:
+        cmd.extend(['-F', format_str])
+    return subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)

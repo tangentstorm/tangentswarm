@@ -33,11 +33,14 @@ The intent is to assign each branch to a separate instance of an AI agent like C
 
 # Specify repository and branch
 ./swarm.py <repo-name> <branch-name>
+
+# View status of all branches
+./swarm.py -c status
 ```
 
 ## Configuration
 
-TangentSwarm uses a YAML configuration file (`swarm.yaml`) to store repository information, branch-to-port mappings, programs to run, initialization commands, and environment variables.
+TangentSwarm uses a YAML configuration file (`~/.swarm.yaml`) in your home directory to store repository information, branch-to-port mappings, programs to run, initialization commands, and environment variables. This allows you to run the status command from any directory.
 
 Example configuration:
 
@@ -185,6 +188,33 @@ By default, if no layout prefixes are specified, TangentSwarm will create a new 
 2. Window 1: Second command
 3. Window 2: Third command
 
+## Branch Status
+
+TangentSwarm includes a status command that helps you keep track of your branches and their current states:
+
+```bash
+./swarm.py -c status
+```
+
+This command functions as an interactive session manager:
+
+1. Displays inactive repositories and branches (those without local directories)
+2. Shows active branches without tmux sessions (those with directories but no tmux session)
+3. Lists ALL tmux sessions (both swarm-managed and external) in a numbered selector
+4. Lets you switch to any tmux session by pressing the corresponding number key
+
+The display shows each tmux session with its full name (which includes the port number for swarm-managed sessions) and status information from the `.swarm` file (if present). This creates a clean tmux session selector that makes it easy to keep track of all your tmux sessions and branches in one view.
+
+### Status Files
+
+You can create a `.swarm` file in the root of your branch directory with YAML content:
+
+```yaml
+status: "Working on feature X"
+```
+
+This status message will be displayed when you run `swarm.py -c status`, allowing you to keep notes about what you're working on in each branch.
+
 ## Tips
 
 - Customize the programs and their layout for each repository in the YAML config file
@@ -195,6 +225,11 @@ By default, if no layout prefixes are specified, TangentSwarm will create a new 
 - Use `tmux ls` to view all running sessions with their port numbers
 - Use `set -g status-left-length 50` to increase the length of the tmux session name display
 - Add `bind s choose-tree -s -O name` to your `~/.tmux.conf` to sort sessions alphabetically when you press `<prefix> s`. Since TangentSwarm uses `port/name` format, this effectively sorts sessions by port number
+- Replace the default tmux session chooser with swarm's status command by adding this to your `~/.tmux.conf`:
+  ```
+  bind-key s run-shell "tmux split-window -p 70 'python /path/to/swarm.py -c status'"
+  ```
+  (Replace `/path/to/swarm.py` with the absolute path to your swarm.py file. Since the config is in `~/.swarm.yaml`, you can run this from any directory.)
 - If you want certain sessions to appear at the top of the sorted list, you can rename them with `<prefix> : rename-session *important-session`. The asterisk (`*`) character sorts before numbers, causing these sessions to appear first in the list. Note that most other characters that would sort before digits are invalid in tmux session names
 
 
