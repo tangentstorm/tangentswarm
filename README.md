@@ -147,6 +147,8 @@ By default, if no layout prefixes are specified, TangentSwarm will create a new 
 - If already in a tmux session, TangentSwarm will switch to the new session rather than nesting
 - Use `tmux ls` to view all running sessions with their port numbers
 - Use `set -g status-left-length 50` to increase the length of the tmux session name display
+- Add `bind s choose-tree -s -O name` to your `~/.tmux.conf` to sort sessions alphabetically when you press `<prefix> s`. Since TangentSwarm uses `port/name` format, this effectively sorts sessions by port number
+- If you want certain sessions to appear at the top of the sorted list, you can rename them with `<prefix> : rename-session *important-session`. The asterisk (`*`) character sorts before numbers, causing these sessions to appear first in the list. Note that most other characters that would sort before digits are invalid in tmux session names
 
 
 ## Requirements
