@@ -46,7 +46,7 @@ def load_config():
 
     # If no config files found, return default config
     return {
-        'swarm': {
+        '.swarm': {
             'root': '.'  # Default to current directory
         },
         'example_repo': {
@@ -83,9 +83,14 @@ def get_args():
 
     # Handle regular branch commands
     if len(args) == 1:
-        # Only branch name provided, use first repo
+        # Only branch name provided, use first repo (ignoring .swarm config entry)
         branch_name = args[0]
-        repo_url = list(config.keys())[0]
+        # Filter out the .swarm config entry
+        repo_urls = [url for url in config.keys() if url != '.swarm']
+        if not repo_urls:
+            print("No repositories configured.")
+            sys.exit(1)
+        repo_url = repo_urls[0]
         repo_name = repo_url.split('/')[-1].split('.')[0]
         return "branch", repo_name, repo_url, branch_name
     elif len(args) == 2:
@@ -339,12 +344,12 @@ def is_unsafe_port(port):
 def get_swarm_root(config):
     """Get the root directory for branch directories from the config.
 
-    Looks for swarm.root in the configuration. If not found, defaults to current directory.
+    Looks for .swarm.root in the configuration. If not found, defaults to current directory.
     The root is expanded to handle ~ for the user's home directory.
     """
-    if 'swarm' in config and 'root' in config['swarm']:
+    if '.swarm' in config and 'root' in config['.swarm']:
         # Expand any ~ in the path to the user's home directory
-        return os.path.expanduser(config['swarm']['root'])
+        return os.path.expanduser(config['.swarm']['root'])
     return '.'  # Default to current directory
 
 def get_branch_port(config, repo_url, branch_name):
@@ -583,8 +588,8 @@ def show_branch_status():
 
     # Go through each repo in the config
     for repo_url, repo_config in config.items():
-        # Skip the swarm config entry
-        if repo_url == 'swarm':
+        # Skip the .swarm config entry
+        if repo_url == '.swarm':
             continue
 
         repo_name = repo_url.split('/')[-1].split('.')[0]

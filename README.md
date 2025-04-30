@@ -46,7 +46,7 @@ Example configuration:
 
 ```yaml
 # Global swarm configuration
-swarm:
+.swarm:
   root: ~/projects  # Root directory for all branch directories
 
 git@github.com:username/repo:
@@ -75,7 +75,7 @@ git@github.com:username/repo:
 
 ### Configuration Fields
 
-- `swarm`: Global configuration options
+- `.swarm`: Global configuration options
   - `root`: Root directory where all branch directories will be created (e.g. `~/projects`)
 - `branches`: Maps branch names to port numbers or configuration dictionaries
   - Simple port format: `branch_name: port_number`
