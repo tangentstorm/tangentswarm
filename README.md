@@ -37,7 +37,7 @@ The intent is to assign each branch to a separate instance of an AI agent like C
 
 ## Configuration
 
-TangentSwarm uses a YAML configuration file (`swarm.yaml`) to store repository information, branch-to-port mappings, programs to run, and initialization commands.
+TangentSwarm uses a YAML configuration file (`swarm.yaml`) to store repository information, branch-to-port mappings, programs to run, initialization commands, and environment variables.
 
 Example configuration:
 
@@ -47,6 +47,16 @@ git@github.com:username/repo:
     main: 5000
     feature1: 5010
     feature2: 5020
+    # Branch with custom environment variables
+    custom-branch:
+      port: 5030
+      env:
+        APP: custom
+        DEBUG: 1
+  # Repository-level environment variables (applied to all branches)
+  env:
+    APP: default
+    NODE_ENV: development
   programs:
     - 'codex'
     - '| npm run dev --port=${PORT}'
@@ -58,11 +68,48 @@ git@github.com:username/repo:
 
 ### Configuration Fields
 
-- `branches`: Maps branch names to port numbers (used for development servers)
+- `branches`: Maps branch names to port numbers or configuration dictionaries
+  - Simple port format: `branch_name: port_number`
+  - Advanced format with environment: `branch_name: { port: port_number, env: { KEY: VALUE } }`
+- `env`: Repository-level environment variables applied to all programs and initialization commands
 - `programs`: List of commands to run in each pane
   - First command: Always runs in the initial pane/window
   - Subsequent commands use layout prefixes to determine window/pane arrangement
 - `init`: List of commands to run when setting up a new repository
+
+### Environment Variables
+
+TangentSwarm supports environment variables at both repository and branch levels:
+
+1. Repository-level environment variables are applied to all branches.
+2. Branch-level environment variables override repository-level ones when there are conflicts.
+3. Environment variables are available to all commands in the `programs` list and `init` commands.
+
+Example usage:
+
+```yaml
+git@github.com:username/repo:
+  branches:
+    # Simple branch with just a port
+    main: 5000
+    # Branch with custom environment
+    dev:
+      port: 5010
+      env:
+        APP: developer
+        DEBUG: 1
+  # Repository-level environment
+  env:
+    APP: default
+    NODE_ENV: development
+  programs:
+    - 'codex'
+    - '| APP=${APP} npm run dev --port=${PORT}'
+```
+
+In this example:
+- For the `main` branch: `APP=default` and `NODE_ENV=development`
+- For the `dev` branch: `APP=developer` (overrides repo setting), `DEBUG=1` and `NODE_ENV=development`
 
 ### Session Naming
 

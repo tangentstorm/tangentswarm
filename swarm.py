@@ -120,7 +120,7 @@ def create_tmux_session(session_name, branch_dir):
 
     return True
 
-def setup_and_run_programs(session_name, branch_dir, programs, port):
+def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
     """Set up the tmux session layout based on command sigils and run programs."""
     if not programs:
         return False
@@ -132,12 +132,22 @@ def setup_and_run_programs(session_name, branch_dir, programs, port):
     current_window = 0
     current_pane = 0
 
+    # Build environment export commands if env dictionary is provided
+    env_exports = ""
+    if env:
+        for key, value in env.items():
+            env_exports += f"export {key}=\"{value}\"; "
+
     # Process each program command with its sigil
     for i, program in enumerate(programs):
         sigil, cmd = extract_sigil_and_command(program)
 
         # Replace port variables in the command
         cmd = replace_port_variables(cmd, port)
+
+        # Add environment variables to the command if available
+        if env_exports and sigil != SIGIL_TMUX_COMMAND and sigil != SIGIL_NO_SHELL:
+            cmd = f"{env_exports} {cmd}"
 
         # Handle first command specially
         if i == 0:
@@ -149,7 +159,12 @@ def setup_and_run_programs(session_name, branch_dir, programs, port):
                 temp_win = f"{session_name}:temp"
                 tmux.new_window('-t', session_name, '-n', 'temp')
                 # Run the command directly without a shell
-                subprocess.run(cmd.split(), cwd=branch_dir)
+                # For direct execution, handle env variables differently
+                cmd_parts = cmd.split()
+                env_dict = os.environ.copy()
+                if env:
+                    env_dict.update(env)
+                subprocess.run(cmd_parts, cwd=branch_dir, env=env_dict)
                 # Kill the temporary window when done
                 tmux.kill_pane('-t', temp_win)
             else:
@@ -201,7 +216,12 @@ def setup_and_run_programs(session_name, branch_dir, programs, port):
             temp_win = f"{session_name}:temp"
             tmux.new_window('-t', session_name, '-n', 'temp')
             # Run the command directly without a shell
-            subprocess.run(cmd.split(), cwd=branch_dir)
+            # For direct execution, handle env variables differently
+            cmd_parts = cmd.split()
+            env_dict = os.environ.copy()
+            if env:
+                env_dict.update(env)
+            subprocess.run(cmd_parts, cwd=branch_dir, env=env_dict)
             # Kill the temporary window when done
             tmux.kill_pane('-t', temp_win)
 
@@ -209,6 +229,35 @@ def setup_and_run_programs(session_name, branch_dir, programs, port):
     tmux.select_pane(f'{session_name}:0.0')
 
     return True
+
+def get_repo_env(config, repo_url):
+    """Get environment dictionary from repo config."""
+    if 'env' in config[repo_url]:
+        return config[repo_url]['env']
+    return {}
+
+def get_branch_env(config, repo_url, branch_name):
+    """Get environment dictionary from branch config."""
+    branch_config = config[repo_url]['branches'][branch_name]
+
+    # If branch config is a dictionary with 'env' key
+    if isinstance(branch_config, dict) and 'env' in branch_config:
+        return branch_config['env']
+    return {}
+
+def get_combined_env(config, repo_url, branch_name):
+    """Combine repository and branch environment dictionaries.
+    Branch environment values override repository environment values.
+    """
+    env = {}
+
+    # Start with repo env
+    env.update(get_repo_env(config, repo_url))
+
+    # Override with branch env
+    env.update(get_branch_env(config, repo_url, branch_name))
+
+    return env
 
 def get_programs(config, repo_url):
     """Get the list of programs to run from the config."""
@@ -242,14 +291,14 @@ def replace_port_variables(command, port):
 
     return command
 
-def restart_session(session_name, branch_dir, programs, port):
+def restart_session(session_name, branch_dir, programs, port, env=None):
     """Restart the session by killing it and creating a new one."""
     # Kill the existing session
     if session_exists(session_name):
         tmux.kill_session('-t', session_name)
 
-    # Create a new session with the specified layout
-    return setup_and_run_programs(session_name, branch_dir, programs, port)
+    # Create a new session with the specified layout and environment
+    return setup_and_run_programs(session_name, branch_dir, programs, port, env)
 
 # Define Chrome's unsafe ports to avoid globally
 CHROME_UNSAFE_PORTS = [5060, 5061] + list(range(6000, 6064))
@@ -257,6 +306,16 @@ CHROME_UNSAFE_PORTS = [5060, 5061] + list(range(6000, 6064))
 def is_unsafe_port(port):
     """Check if a port is considered unsafe by Chrome."""
     return port in CHROME_UNSAFE_PORTS
+
+def get_branch_port(config, repo_url, branch_name):
+    """Extract port from branch configuration, which can be an integer or a dictionary with a 'port' key."""
+    branch_config = config[repo_url]['branches'][branch_name]
+
+    # If branch_config is a dictionary with a 'port' key
+    if isinstance(branch_config, dict) and 'port' in branch_config:
+        return branch_config['port']
+    # Otherwise, assume it's a direct port number
+    return branch_config
 
 def check_for_unsafe_ports(config):
     """Check configuration for any unsafe ports and warn the user.
@@ -268,7 +327,10 @@ def check_for_unsafe_ports(config):
 
     for repo_url, repo_config in config.items():
         if 'branches' in repo_config:
-            for branch_name, port in repo_config['branches'].items():
+            for branch_name, branch_config in repo_config['branches'].items():
+                # Extract port depending on the format (integer or dictionary)
+                port = get_branch_port(config, repo_url, branch_name)
+
                 if is_unsafe_port(port):
                     unsafe_ports_found.append((repo_url, branch_name, port))
 
@@ -287,8 +349,14 @@ def find_next_available_port(used_ports):
     # If all ports are used, start over from 5000 (shouldn't happen with this range)
     return 5000
 
-def run_init_commands(branch_dir, init_commands, port):
-    """Run initialization commands in the directory with port substitution.
+def run_init_commands(branch_dir, init_commands, port, env=None):
+    """Run initialization commands in the directory with port substitution and environment variables.
+
+    Args:
+        branch_dir: Directory where commands should be executed
+        init_commands: List of commands to execute
+        port: Port number for variable substitution
+        env: Optional dictionary of environment variables
 
     Returns:
         bool: True if all commands succeeded, False otherwise.
@@ -301,7 +369,13 @@ def run_init_commands(branch_dir, init_commands, port):
         # Replace port variables in the command
         processed_cmd = replace_port_variables(cmd, port)
         print(f"Executing: {processed_cmd}")
-        result = subprocess.run(processed_cmd, shell=True, cwd=branch_dir)
+
+        # Set up environment for subprocess
+        env_dict = os.environ.copy()
+        if env:
+            env_dict.update(env)
+
+        result = subprocess.run(processed_cmd, shell=True, cwd=branch_dir, env=env_dict)
         if result.returncode != 0:
             print(f"Error: Initialization command failed: '{processed_cmd}'")
             return False
@@ -468,7 +542,12 @@ def main():
         used_ports = set()
         for repo_config in config.values():
             if 'branches' in repo_config:
-                used_ports.update(repo_config['branches'].values())
+                for b_name, b_config in repo_config['branches'].items():
+                    if isinstance(b_config, dict) and 'port' in b_config:
+                        used_ports.add(b_config['port'])
+                    else:
+                        # Handle direct port assignment
+                        used_ports.add(b_config)
             else:
                 # Handle legacy config format for backwards compatibility
                 used_ports.update(repo_config.values())
@@ -482,7 +561,7 @@ def main():
         branch_port = port
     else:
         # Use existing port for this branch
-        branch_port = config[repo_url]['branches'][branch_name]
+        branch_port = get_branch_port(config, repo_url, branch_name)
 
         # Check if this branch's port is unsafe
         if is_unsafe_port(branch_port):
@@ -495,16 +574,30 @@ def main():
                 used_ports = set()
                 for r_url, r_config in config.items():
                     if 'branches' in r_config:
-                        for b_name, b_port in r_config['branches'].items():
-                            if not (r_url == repo_url and b_name == branch_name):
-                                used_ports.add(b_port)
+                        for b_name, b_config in r_config['branches'].items():
+                            # Skip the current branch we're reassigning
+                            if r_url == repo_url and b_name == branch_name:
+                                continue
+
+                            # Extract port depending on format
+                            if isinstance(b_config, dict) and 'port' in b_config:
+                                used_ports.add(b_config['port'])
+                            else:
+                                used_ports.add(b_config)
 
                 # Find a new safe port
                 new_port = find_next_available_port(used_ports)
                 print(f"Reassigning port from {branch_port} to {new_port}")
 
-                # Update config
-                config[repo_url]['branches'][branch_name] = new_port
+                # Update config - preserve environment if it exists
+                branch_config = config[repo_url]['branches'][branch_name]
+                if isinstance(branch_config, dict):
+                    branch_config['port'] = new_port
+                else:
+                    # If it was a direct port assignment, replace with a dictionary
+                    # that includes the port and an empty environment
+                    config[repo_url]['branches'][branch_name] = {'port': new_port}
+
                 save_config(config)
                 branch_port = new_port
 
@@ -513,6 +606,9 @@ def main():
 
     # Get initialization commands
     init_commands = get_init_commands(config, repo_url)
+
+    # Get combined environment variables
+    combined_env = get_combined_env(config, repo_url, branch_name)
 
     # Checkout directory
     branch_dir = f"./{repo_name}.{branch_name}"
@@ -588,7 +684,7 @@ def main():
 
     # Run initialization commands for new repositories
     if is_new_repo and init_commands:
-        if not run_init_commands(branch_dir, init_commands, branch_port):
+        if not run_init_commands(branch_dir, init_commands, branch_port, combined_env):
             response = input("Initialization failed. Continue anyway? [y/N]: ")
             if response.lower() != 'y':
                 print("Operation cancelled")
@@ -602,10 +698,10 @@ def main():
         print(f"Session {session_name} already exists.")
         response = input("Restart session? [y/N]: ")
         if response.lower() == 'y':
-            restart_session(session_name, branch_dir, programs, branch_port)
+            restart_session(session_name, branch_dir, programs, branch_port, combined_env)
     else:
         # Create a new session with the specified layout
-        setup_and_run_programs(session_name, branch_dir, programs, branch_port)
+        setup_and_run_programs(session_name, branch_dir, programs, branch_port, combined_env)
 
     # Check if we're already in a tmux session
     in_tmux = 'TMUX' in os.environ
