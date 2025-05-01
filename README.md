@@ -141,7 +141,7 @@ Each command in the `programs` list can have a sigil (special character prefix):
 - `|` - Create a horizontal split (side by side)
 - `~` - Create a vertical split (one above the other)
 - `@` - Run a tmux command against this session (e.g., `@ next-window`)
-- `!` - Run command without a shell (creates a temporary window that closes when done)
+- `!` - Run command in a temporary window that closes when done (useful for one-off commands like setting status)
 
 Examples:
 ```yaml
@@ -151,7 +151,8 @@ programs:
   - '~ python api/server.py --port=${PORT+1}' # Vertical split in the second pane
   - '* npm test'                             # New window
   - '@ next-window'                          # Run tmux command against session
-  - '! make build'                           # Run command without shell
+  - '! echo "Working on feature X" > .swarm-status'  # Set status (temporary window)
+  - '! make build'                           # Run command in temporary window
 ```
 
 To switch to the next window after setup, you can add `@ next-window` to your program list.

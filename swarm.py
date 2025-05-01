@@ -22,8 +22,8 @@ SIGIL_NEW_WINDOW = '*'  # Create a new window
 SIGIL_HORIZONTAL_SPLIT = '|'  # Split horizontally (side by side)
 SIGIL_VERTICAL_SPLIT = '~'  # Split vertically (one above the other)
 SIGIL_TMUX_COMMAND = '@'  # Run a tmux command against this session
-SIGIL_NO_SHELL = '!'  # Run command without a shell (direct execution)
-VALID_SIGILS = [SIGIL_NEW_WINDOW, SIGIL_HORIZONTAL_SPLIT, SIGIL_VERTICAL_SPLIT, SIGIL_TMUX_COMMAND, SIGIL_NO_SHELL]
+SIGIL_TEMP_WINDOW = '!'  # Run command in a temporary window
+VALID_SIGILS = [SIGIL_NEW_WINDOW, SIGIL_HORIZONTAL_SPLIT, SIGIL_VERTICAL_SPLIT, SIGIL_TMUX_COMMAND, SIGIL_TEMP_WINDOW]
 
 def load_config():
     """Load configuration from YAML file.
@@ -180,7 +180,7 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
         cmd = replace_port_variables(cmd, port)
 
         # Add environment variables to the command if available
-        if env_exports and sigil != SIGIL_TMUX_COMMAND and sigil != SIGIL_NO_SHELL:
+        if env_exports and sigil != SIGIL_TMUX_COMMAND and sigil != SIGIL_TEMP_WINDOW:
             cmd = f"{env_exports} {cmd}"
 
         # Handle first command specially
@@ -188,17 +188,15 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
             if sigil == SIGIL_TMUX_COMMAND:
                 # Run tmux command against this session
                 tmux.run_tmux_command(session_name, cmd)
-            elif sigil == SIGIL_NO_SHELL:
+            elif sigil == SIGIL_TEMP_WINDOW:
                 # Create a temporary window to run the command
                 temp_win = f"{session_name}:temp"
                 tmux.new_window('-t', session_name, '-n', 'temp')
-                # Run the command directly without a shell
-                # For direct execution, handle env variables differently
-                cmd_parts = cmd.split()
+                # Run the command with a shell for proper interpretation of redirects, pipes, etc.
                 env_dict = os.environ.copy()
                 if env:
                     env_dict.update(env)
-                subprocess.run(cmd_parts, cwd=branch_dir, env=env_dict)
+                subprocess.run(cmd, shell=True, cwd=branch_dir, env=env_dict)
                 # Kill the temporary window when done
                 tmux.kill_pane('-t', temp_win)
             else:
@@ -245,17 +243,15 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
             # Run tmux command against this session
             tmux.run_tmux_command(session_name, cmd)
 
-        elif sigil == SIGIL_NO_SHELL:
+        elif sigil == SIGIL_TEMP_WINDOW:
             # Create a temporary window to run the command
             temp_win = f"{session_name}:temp"
             tmux.new_window('-t', session_name, '-n', 'temp')
-            # Run the command directly without a shell
-            # For direct execution, handle env variables differently
-            cmd_parts = cmd.split()
+            # Run the command with a shell for proper interpretation of redirects, pipes, etc.
             env_dict = os.environ.copy()
             if env:
                 env_dict.update(env)
-            subprocess.run(cmd_parts, cwd=branch_dir, env=env_dict)
+            subprocess.run(cmd, shell=True, cwd=branch_dir, env=env_dict)
             # Kill the temporary window when done
             tmux.kill_pane('-t', temp_win)
 
