@@ -22,7 +22,7 @@ SIGIL_NEW_WINDOW = '*'  # Create a new window
 SIGIL_HORIZONTAL_SPLIT = '|'  # Split horizontally (side by side)
 SIGIL_VERTICAL_SPLIT = '~'  # Split vertically (one above the other)
 SIGIL_TMUX_COMMAND = '@'  # Run a tmux command against this session
-SIGIL_TEMP_WINDOW = '!'  # Run command in a temporary window
+SIGIL_TEMP_WINDOW = '!'  # Run command directly (not in tmux) and display output
 VALID_SIGILS = [SIGIL_NEW_WINDOW, SIGIL_HORIZONTAL_SPLIT, SIGIL_VERTICAL_SPLIT, SIGIL_TMUX_COMMAND, SIGIL_TEMP_WINDOW]
 
 def load_config():
@@ -141,8 +141,6 @@ def extract_sigil_and_command(command_str):
 
 def create_tmux_session(session_name, branch_dir):
     """Create a new tmux session."""
-    print(f"Creating new tmux session: {session_name}")
-
     # Create a new session with the shell
     result = tmux.new_session(session_name, branch_dir)
     if result.returncode != 0:
@@ -166,6 +164,18 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
     current_window = 0
     current_pane = 0
 
+    # Track whether we've used the initial window yet
+    initial_window_used = False
+
+    # Count number of non-tmux commands at the beginning
+    non_tmux_commands = 0
+    for cmd in programs:
+        sigil, _ = extract_sigil_and_command(cmd)
+        if sigil in [SIGIL_TEMP_WINDOW, SIGIL_TMUX_COMMAND]:
+            non_tmux_commands += 1
+        else:
+            break
+
     # Build environment export commands if env dictionary is provided
     env_exports = ""
     if env:
@@ -183,33 +193,49 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
         if env_exports and sigil != SIGIL_TMUX_COMMAND and sigil != SIGIL_TEMP_WINDOW:
             cmd = f"{env_exports} {cmd}"
 
-        # Handle first command specially
-        if i == 0:
-            if sigil == SIGIL_TMUX_COMMAND:
-                # Run tmux command against this session
-                tmux.run_tmux_command(session_name, cmd)
-            elif sigil == SIGIL_TEMP_WINDOW:
-                # Create a temporary window to run the command
-                temp_win = f"{session_name}:temp"
-                tmux.new_window('-t', session_name, '-n', 'temp')
-                # Run the command with a shell for proper interpretation of redirects, pipes, etc.
+        # Handle non-window commands (TEMP_WINDOW and TMUX_COMMAND)
+        if sigil == SIGIL_TMUX_COMMAND:
+            # Run tmux command against this session
+            tmux.run_tmux_command(session_name, cmd)
+            continue
+
+        elif sigil == SIGIL_TEMP_WINDOW:
+            # For temporary commands, run directly with subprocess instead of in tmux
+            print(f"Running temporary command: {cmd}")
+            try:
+                # Build environment dictionary with current environment plus any specified vars
                 env_dict = os.environ.copy()
                 if env:
                     env_dict.update(env)
-                subprocess.run(cmd, shell=True, cwd=branch_dir, env=env_dict)
-                # Kill the temporary window when done
-                tmux.kill_pane('-t', temp_win)
-            else:
-                # Regular command with shell in initial pane
-                tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
+
+                # Run command directly with shell=True for proper shell interpretation
+                result = subprocess.run(cmd, shell=True, cwd=branch_dir, env=env_dict,
+                                       stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+                # Display output if any
+                if result.stdout.strip():
+                    print(f"Command output: {result.stdout.strip()}")
+
+                # Check for errors
+                if result.returncode != 0:
+                    print(f"Command failed with exit code {result.returncode}: {result.stderr.strip()}")
+            except Exception as e:
+                print(f"Error executing command: {e}")
+            continue
+
+        # Handle window and pane commands - use initial window if possible
+        if not initial_window_used:
+            # This is the first window-based command - use the initial window
+            initial_window_used = True
+            tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
             continue
 
         # Apply the sigil and run the command based on the type
         if sigil == SIGIL_NEW_WINDOW:
-            # Create a new window
-            result = tmux.new_window('-t', f'{session_name}:{current_window+1}', '-c', branch_dir)
+            # Create a new window with the next available index
+            current_window += 1
+            result = tmux.new_window('-t', session_name, '-c', branch_dir)
             if result.returncode == 0:
-                current_window += 1
                 current_pane = 0
                 # Rename the window based on the command (use first word)
                 window_name = cmd.split()[0] if cmd else f"win{current_window}"
@@ -242,18 +268,6 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
         elif sigil == SIGIL_TMUX_COMMAND:
             # Run tmux command against this session
             tmux.run_tmux_command(session_name, cmd)
-
-        elif sigil == SIGIL_TEMP_WINDOW:
-            # Create a temporary window to run the command
-            temp_win = f"{session_name}:temp"
-            tmux.new_window('-t', session_name, '-n', 'temp')
-            # Run the command with a shell for proper interpretation of redirects, pipes, etc.
-            env_dict = os.environ.copy()
-            if env:
-                env_dict.update(env)
-            subprocess.run(cmd, shell=True, cwd=branch_dir, env=env_dict)
-            # Kill the temporary window when done
-            tmux.kill_pane('-t', temp_win)
 
     # Select the first pane of the first window
     tmux.select_pane(f'{session_name}:0.0')
@@ -322,13 +336,43 @@ def replace_port_variables(command, port):
     return command
 
 def restart_session(session_name, branch_dir, programs, port, env=None):
-    """Restart the session by killing it and creating a new one."""
-    # Kill the existing session
+    """Restart the session by killing it and creating a new one.
+
+    Note: This function is kept for API compatibility but is not used directly by main().
+    """
+    max_attempts = 3
+    attempt = 0
+
+    # Kill the existing session with multiple attempts if needed
+    while session_exists(session_name) and attempt < max_attempts:
+        attempt += 1
+        print(f"Killing session {session_name}... (attempt {attempt})")
+
+        if attempt == 1:
+            # First try normal kill-session
+            subprocess.run(['tmux', 'kill-session', '-t', session_name], check=False)
+        elif attempt == 2:
+            # Second try with more direct approach
+            subprocess.run(['tmux', 'kill-session', '-t', session_name, '||', 'true'], shell=True, check=False)
+        else:
+            # Last resort, kill tmux server (only do this if we're really stuck)
+            print("Warning: Using kill-server as last resort...")
+            subprocess.run(['tmux', 'kill-server'], check=False)
+
+        # Add a delay to ensure tmux has time to clean up
+        time.sleep(1)
+
+    # Final verification
     if session_exists(session_name):
-        tmux.kill_session('-t', session_name)
+        print(f"Warning: Failed to kill session {session_name} after {max_attempts} attempts.")
+        print("Proceeding anyway, but you may need to manually clean up tmux sessions.")
+
+    # Wait a moment before creating the new session
+    time.sleep(0.5)
 
     # Create a new session with the specified layout and environment
-    return setup_and_run_programs(session_name, branch_dir, programs, port, env)
+    setup_and_run_programs(session_name, branch_dir, programs, port, env)
+    return True  # Return True to indicate success (doesn't propagate the result of setup_and_run_programs)
 
 # Define Chrome's unsafe ports to avoid globally
 CHROME_UNSAFE_PORTS = [5060, 5061] + list(range(6000, 6064))
@@ -968,10 +1012,41 @@ def main():
             print(f"Session {session_name} already exists.")
             response = input("Restart session? [y/N]: ")
             if response.lower() == 'y':
-                restart_session(session_name, branch_dir, programs, branch_port, combined_env)
-        else:
-            # Create a new session with the specified layout
-            setup_and_run_programs(session_name, branch_dir, programs, branch_port, combined_env)
+                # Don't call restart_session - we'll handle it directly to avoid double setup
+                max_attempts = 3
+                attempt = 0
+
+                # Kill the existing session with multiple attempts if needed
+                while session_exists(session_name) and attempt < max_attempts:
+                    attempt += 1
+                    print(f"Killing session {session_name}... (attempt {attempt})")
+
+                    if attempt == 1:
+                        # First try normal kill-session
+                        subprocess.run(['tmux', 'kill-session', '-t', session_name], check=False)
+                    elif attempt == 2:
+                        # Second try with more direct approach
+                        subprocess.run(['tmux', 'kill-session', '-t', session_name, '||', 'true'], shell=True, check=False)
+                    else:
+                        # Last resort, kill tmux server (only do this if we're really stuck)
+                        print("Warning: Using kill-server as last resort...")
+                        subprocess.run(['tmux', 'kill-server'], check=False)
+
+                    # Add a delay to ensure tmux has time to clean up
+                    time.sleep(1)
+
+                # Final verification
+                if session_exists(session_name):
+                    print(f"Warning: Failed to kill session {session_name} after {max_attempts} attempts.")
+                    print("Proceeding anyway, but you may need to manually clean up tmux sessions.")
+
+                # Wait a moment before creating the new session
+                time.sleep(0.5)
+
+        # Create/recreate session with the specified layout
+        # This will be used both for new sessions and after killing existing ones
+        print(f"Creating tmux session: {session_name}")
+        setup_and_run_programs(session_name, branch_dir, programs, branch_port, combined_env)
 
         # Check if we're already in a tmux session
         in_tmux = 'TMUX' in os.environ
