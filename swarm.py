@@ -607,15 +607,13 @@ def show_branch_status():
                 if os.path.exists(branch_dir):
                     repo_has_active_branch = True
                     status = ""
-                    swarm_file = f"{branch_dir}/.swarm"
+                    swarm_status_file = f"{branch_dir}/.swarm-status"
 
-                    # Check if .swarm file exists and has a status entry
-                    if os.path.exists(swarm_file):
+                    # Check if .swarm-status file exists
+                    if os.path.exists(swarm_status_file):
                         try:
-                            with open(swarm_file, 'r') as f:
-                                swarm_config = yaml.safe_load(f)
-                                if swarm_config and isinstance(swarm_config, dict) and 'status' in swarm_config:
-                                    status = swarm_config['status']
+                            with open(swarm_status_file, 'r') as f:
+                                status = f.readline().strip()
                         except Exception:
                             # Silently ignore errors reading the file
                             pass

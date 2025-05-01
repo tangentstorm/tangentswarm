@@ -209,14 +209,14 @@ This command functions as an interactive session manager:
 3. Lists ALL tmux sessions (both swarm-managed and external) in a numbered selector
 4. Lets you switch to any tmux session by pressing the corresponding number key
 
-The display shows each tmux session with its full name (which includes the port number for swarm-managed sessions) and status information from the `.swarm` file (if present). This creates a clean tmux session selector that makes it easy to keep track of all your tmux sessions and branches in one view.
+The display shows each tmux session with its full name (which includes the port number for swarm-managed sessions) and status information from the `.swarm-status` file (if present). This creates a clean tmux session selector that makes it easy to keep track of all your tmux sessions and branches in one view.
 
 ### Status Files
 
-You can create a `.swarm` file in the root of your branch directory with YAML content:
+You can create a `.swarm-status` file in the root of your branch directory with a single line of text:
 
-```yaml
-status: "Working on feature X"
+```
+Working on feature X
 ```
 
 This status message will be displayed when you run `swarm.py -c status`, allowing you to keep notes about what you're working on in each branch.
