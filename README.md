@@ -1,3 +1,5 @@
+<img width="2300" height="1362" alt="image" src="https://github.com/user-attachments/assets/8bdd8260-9f16-4a8c-9805-76ea03e7884c" />
+
 # TangentSwarm
 
 TangentSwarm is a developer productivity tool that makes working with multiple branches in Git repositories easier,
