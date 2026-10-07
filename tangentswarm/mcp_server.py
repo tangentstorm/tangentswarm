@@ -316,6 +316,7 @@ TOOLS = [list_sessions, list_panes, capture_pane, send_keys, new_session, new_wi
 
 
 def build_server(**kwargs):
+    kwargs.setdefault('version', __version__)
     server = _Server(name='tangentswarm', instructions=INSTRUCTIONS, **kwargs)
     for fn in TOOLS:
         server.add_tool(fn, name=fn.__name__)
