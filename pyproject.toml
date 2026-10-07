@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tangentswarm"
+dynamic = ["version"]
+description = "tmux-based swarm launcher and an MCP server for driving tmux sessions"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PyYAML",
+    "mcp",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+swarm = "tangentswarm.cli:main"
+
+[tool.setuptools]
+packages = ["tangentswarm"]
+
+[tool.setuptools.dynamic]
+version = { attr = "tangentswarm.__version__" }
