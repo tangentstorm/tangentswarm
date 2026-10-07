@@ -69,6 +69,10 @@ def save_config(config):
     with open(CONFIG_FILE, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
+def print_usage():
+    print("Usage: swarm.py [<repo_name>] <branch_name>")
+    print("       swarm.py -c status")
+
 def get_args():
     """Parse command line arguments and return command, repo_name, repo_url, and branch_name."""
     args = sys.argv[1:]
@@ -77,6 +81,11 @@ def get_args():
     if not config:
         print("No repositories configured.")
         sys.exit(1)
+
+    # Handle -h / --help (print usage and exit successfully)
+    if len(args) == 1 and args[0] in ("-h", "--help"):
+        print_usage()
+        sys.exit(0)
 
     # Handle the status command
     if len(args) == 2 and args[0] == "-c" and args[1] == "status":
@@ -112,8 +121,7 @@ def get_args():
 
         return "branch", repo_name, repo_url, branch_name
     else:
-        print("Usage: swarm.py [<repo_name>] <branch_name>")
-        print("       swarm.py -c status")
+        print_usage()
         sys.exit(1)
 
 def session_exists(session_name):
@@ -143,9 +151,10 @@ def extract_sigil_and_command(command_str):
 def create_tmux_session(session_name, branch_dir):
     """Create a new tmux session."""
     # Create a new session with the shell
-    result = tmux.new_session(session_name, branch_dir)
-    if result.returncode != 0:
-        print(f"Error creating session: {result.stderr}")
+    try:
+        tmux.new_session(session_name, cwd=branch_dir, command=tmux.DEFAULT_SHELL)
+    except tmux.TmuxError as e:
+        print(f"Error creating session: {e.stderr}")
         return False
 
     # Rename the window to make it more recognizable
@@ -235,7 +244,7 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
         if sigil == SIGIL_NEW_WINDOW:
             # Create a new window with the next available index
             current_window += 1
-            result = tmux.new_window('-t', session_name, '-c', branch_dir)
+            result = tmux.new_window_args('-t', session_name, '-c', branch_dir)
             if result.returncode == 0:
                 current_pane = 0
                 # Rename the window based on the command (use first word)
@@ -610,16 +619,7 @@ def show_branch_status():
     # Get current tmux sessions
     active_tmux_sessions = []
     try:
-        tmux_ls_result = tmux.list_sessions()
-
-        if tmux_ls_result.returncode == 0:
-            # Parse the tmux ls output to get session names
-            lines = tmux_ls_result.stdout.strip().split('\n')
-            for line in lines:
-                if line:
-                    # Extract session name (everything before the colon)
-                    session_name = line.split(':')[0]
-                    active_tmux_sessions.append(session_name)
+        active_tmux_sessions = [s['name'] for s in tmux.list_sessions()]
     except Exception:
         # Silently handle the case where tmux is not running
         pass
