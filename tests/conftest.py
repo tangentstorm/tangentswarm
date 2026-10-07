@@ -12,6 +12,6 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setenv('TANGENTSWARM_STATE_DIR', str(tmp_path / 'state'))
     monkeypatch.setenv('TANGENTSWARM_CONFIG_DIR', str(tmp_path / 'config'))
     for var in list(os.environ):
-        if var.startswith('TANGENTSWARM_AUTH_'):
+        if var.startswith(('TANGENTSWARM_AUTH_', 'TANGENTSWARM_API_KEY')):
             monkeypatch.delenv(var, raising=False)
     yield tmp_path

@@ -7,8 +7,12 @@ Transports
   Streamable HTTP   `swarm-mcp --http [--host 127.0.0.1] [--port 8765]`; an
                     OAuth 2.0 resource server -- every request needs a bearer
                     token (see tangentswarm/auth.py and the README).
+                    With `--auth-mode apikey` every request instead needs one
+                    static API key (Authorization: Bearer / X-API-Key), checked
+                    before any MCP handling (see tangentswarm/apikey.py).
 
-Scopes (HTTP mode only; stdio is already authenticated by SSH)
+Scopes (OAuth HTTP modes only; stdio is authenticated by SSH, and a valid API key
+in apikey mode grants every scope)
   tangentswarm:read   list/capture/status tools  (required for every request)
   tangentswarm:shell  tools that run commands or type into panes
 
@@ -20,6 +24,7 @@ import argparse
 import functools
 import inspect
 import logging
+import os
 import sys
 
 import anyio
@@ -38,6 +43,8 @@ cloud_* tools talk to Claude Code cloud sessions through the tangentswarm cloud 
 
 # Set by run_http(); in stdio mode SSH has already authenticated the caller.
 AUTH_ENFORCED = False
+# True in apikey mode: ApiKeyMiddleware has already rejected every request without the key.
+API_KEY_MODE = False
 
 TOOL_SCOPES = {}   # tool name -> scope, for docs and tests
 
@@ -50,6 +57,9 @@ class ScopeError(ToolError):
 
 
 def current_principal():
+    if API_KEY_MODE:
+        from .apikey import PRINCIPAL
+        return dict(PRINCIPAL)
     try:
         from mcp.server.auth.middleware.auth_context import get_access_token
     except ImportError:
@@ -327,18 +337,34 @@ def build_server(**kwargs):
 # HTTP mode
 
 def build_http_app(host='127.0.0.1', port=8765, path='/mcp', overrides=None):
-    """Build the Starlette app for Streamable HTTP with OAuth. Returns (app, config, provider)."""
+    """Build the ASGI app for Streamable HTTP (OAuth, or a static API key in mode 'apikey').
+    Returns (app, config, provider)."""
     from urllib.parse import urlsplit
 
     from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
     from mcp.server.transport_security import TransportSecuritySettings
 
+    from . import apikey as K
     from . import auth as A
 
-    global AUTH_ENFORCED
+    global AUTH_ENFORCED, API_KEY_MODE
+    overrides = dict(overrides or {})
+    api_key_file = overrides.pop('api_key_file', None)
+    if not overrides.get('mode') and not os.environ.get('TANGENTSWARM_AUTH_MODE') \
+            and (api_key_file or K.key_configured()):
+        overrides['mode'] = 'apikey'       # configuring a key selects apikey mode
     cfg = A.load_auth_config(host, port, path, overrides)
+    if api_key_file and cfg.mode != 'apikey':
+        raise K.ApiKeyError(f'--api-key-file only applies to --auth-mode apikey (mode is {cfg.mode})')
     provider = None
-    if cfg.mode == 'builtin':
+    api_key = None
+    if cfg.mode == 'apikey':
+        api_key, cfg.api_key_source = K.load_api_key(api_key_file)   # refuses to start without one
+        cfg.api_key_fingerprint = K.fingerprint(api_key)
+        server = build_server()
+        AUTH_ENFORCED = False       # the key gate below authenticates; a valid key has all scopes
+        API_KEY_MODE = True
+    elif cfg.mode == 'builtin':
         provider = A.BuiltinProvider(cfg)
         settings = AuthSettings(
             issuer_url=cfg.issuer_url, resource_server_url=cfg.resource_url,
@@ -351,7 +377,9 @@ def build_http_app(host='127.0.0.1', port=8765, path='/mcp', overrides=None):
         settings = AuthSettings(issuer_url=cfg.issuer_url, resource_server_url=cfg.resource_url,
                                 required_scopes=cfg.required_scopes, validate_token_resource=False)
         server = build_server(auth=settings, token_verifier=A.ExternalTokenVerifier(cfg))
-    AUTH_ENFORCED = True
+    if api_key is None:
+        AUTH_ENFORCED = True
+        API_KEY_MODE = False
 
     allowed_hosts = ['127.0.0.1:*', 'localhost:*', '[::1]:*']
     allowed_origins = ['http://127.0.0.1:*', 'http://localhost:*', 'http://[::1]:*']
@@ -365,14 +393,26 @@ def build_http_app(host='127.0.0.1', port=8765, path='/mcp', overrides=None):
     if provider is not None:
         # /token (adds client_credentials, delegating other grants to the SDK) and /login
         app.router.routes[0:0] = A.make_extra_routes(provider)
+    if api_key is not None:
+        # outermost layer: no key, no MCP (or anything else)
+        app = K.ApiKeyMiddleware(app, api_key)
     return app, cfg, provider
 
 
 def run_http(host, port, path, overrides):
     import uvicorn
-    app, cfg, _ = build_http_app(host, port, path, overrides)
+    from .apikey import ApiKeyError
+    try:
+        app, cfg, _ = build_http_app(host, port, path, overrides)
+    except ApiKeyError as e:
+        print(f"[tangentswarm] refusing to start: {e}", file=sys.stderr, flush=True)
+        sys.exit(2)
+    if cfg.mode == 'apikey':
+        detail = f"key={cfg.api_key_source} {cfg.api_key_fingerprint}"
+    else:
+        detail = f"issuer={cfg.issuer_url}"
     print(f"[tangentswarm] swarm-mcp HTTP on http://{host}:{port}{path} "
-          f"(auth={cfg.mode}, issuer={cfg.issuer_url}, resource={cfg.resource_url})",
+          f"(auth={cfg.mode}, {detail}, resource={cfg.resource_url})",
           file=sys.stderr, flush=True)
     uvicorn.run(app, host=host, port=port, log_level='info')
 
@@ -380,20 +420,36 @@ def run_http(host, port, path, overrides):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='swarm-mcp', description='tangentswarm MCP server (stdio by default)')
     ap.add_argument('--version', action='version', version=f'tangentswarm {__version__}')
-    ap.add_argument('--http', action='store_true', help='serve Streamable HTTP with OAuth instead of stdio')
+    ap.add_argument('--http', action='store_true',
+                    help='serve Streamable HTTP (OAuth, or a static API key) instead of stdio')
     ap.add_argument('--host', default='127.0.0.1')
     ap.add_argument('--port', type=int, default=8765)
     ap.add_argument('--path', default='/mcp')
     ap.add_argument('--public-url', help='externally visible URL of the MCP endpoint (resource id)')
-    ap.add_argument('--auth-mode', choices=['builtin', 'external'])
+    ap.add_argument('--auth-mode', choices=['builtin', 'external', 'apikey'])
+    ap.add_argument('--api-key-file', help='apikey mode: file holding the key (mode 600); default '
+                    '$TANGENTSWARM_API_KEY, $TANGENTSWARM_API_KEY_FILE, ~/.config/tangentswarm/api_key')
+    ap.add_argument('--gen-api-key', nargs='?', const='', metavar='PATH',
+                    help='write a new random API key to PATH (default ~/.config/tangentswarm/api_key), '
+                         'mode 600, without printing it; then exit')
     ap.add_argument('--issuer', help='external authorization server issuer URL')
     ap.add_argument('--audience', help='expected token audience (default: the resource URL)')
     a = ap.parse_args(argv)
 
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+    if a.gen_api_key is not None:
+        from . import apikey as K
+        try:
+            p = K.generate_key_file(a.gen_api_key or None)
+        except K.ApiKeyError as e:
+            sys.exit(f"swarm-mcp: {e}")
+        print(f"wrote a new API key to {p} (mode 600, {K.fingerprint(K.load_api_key(p)[0])})",
+              file=sys.stderr)
+        return
     if a.http:
         run_http(a.host, a.port, a.path, {'resource_url': a.public_url, 'mode': a.auth_mode,
-                                          'issuer_url': a.issuer, 'audience': a.audience})
+                                          'issuer_url': a.issuer, 'audience': a.audience,
+                                          'api_key_file': a.api_key_file})
         return
     build_server().run('stdio')
 

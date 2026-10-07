@@ -268,7 +268,7 @@ tangentswarm/
   cli.py           swarm CLI (the original swarm.py) + subcommand dispatch
   tmux.py          tmux wrappers (argv lists only; structured list_sessions/list_panes)
   git.py           git helpers
-  mcp_server.py    swarm-mcp (stdio, or Streamable HTTP with OAuth)
+  mcp_server.py    swarm-mcp (stdio, or Streamable HTTP with OAuth or an API key)
   shell.py         shell_exec with timeout, truncation and JSON-lines logging
   auth.py          OAuth resource server + optional built-in authorization server
   auth_cli.py      swarm auth ...
@@ -503,6 +503,35 @@ async def main():
 
 asyncio.run(main())
 ```
+
+### Streamable HTTP with a static API key
+
+For a single trusted client, `--auth-mode apikey` replaces OAuth with one random key:
+
+```sh
+swarm-mcp --gen-api-key            # writes ~/.config/tangentswarm/api_key (0600), prints only a fingerprint
+swarm-mcp --http --auth-mode apikey --host 127.0.0.1 --port 8766 \
+          --public-url https://host.example/swarm-mcp/mcp
+```
+
+- Every request must send `Authorization: Bearer <key>` or `X-API-Key: <key>`; anything
+  else (any path, including unknown ones) gets `401` from an ASGI middleware wrapped around
+  the whole app, before any MCP handling. The comparison is constant-time
+  (`tangentswarm/apikey.py`, `ApiKeyMiddleware`).
+- Key source, first match wins: `--api-key-file`, `$TANGENTSWARM_API_KEY`,
+  `$TANGENTSWARM_API_KEY_FILE`, `~/.config/tangentswarm/api_key`. Key files must be 0600.
+  Configuring a key selects apikey mode unless `--auth-mode` / `TANGENTSWARM_AUTH_MODE`
+  says otherwise. The server refuses to start in apikey mode without a key (or with one
+  shorter than 32 characters).
+- A valid key grants every scope, i.e. `shell_exec` as the server's user: treat it like an
+  SSH private key. Rotate by deleting the file, `--gen-api-key` again, and restarting.
+- No OAuth routes (`/register`, `/token`, `/login`, metadata) are served in this mode.
+- `--public-url` must name the externally visible URL when behind a reverse proxy, so the
+  DNS-rebinding Host check accepts the proxied Host header.
+
+A systemd user unit lives in `contrib/systemd/swarm-mcp-apikey.service`. Behind nginx,
+proxy a location to the loopback port with `proxy_http_version 1.1`, `proxy_buffering
+off` and a long `proxy_read_timeout` (SSE streams).
 
 #### Exposing it publicly later (not done by default)
 

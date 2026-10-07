@@ -73,7 +73,7 @@ def _env_list(name):
 
 @dataclass
 class AuthConfig:
-    mode: str = 'builtin'                 # builtin | external
+    mode: str = 'builtin'                 # builtin | external | apikey (see apikey.py)
     resource_url: str = ''                # public URL of this MCP endpoint (…/mcp)
     issuer_url: str = ''                  # authorization server issuer
     audience: str = ''                    # expected aud/resource in tokens
@@ -89,8 +89,8 @@ class AuthConfig:
     leeway: int = 30
 
     def validate(self):
-        if self.mode not in ('builtin', 'external'):
-            raise ValueError(f"auth mode must be 'builtin' or 'external', not {self.mode!r}")
+        if self.mode not in ('builtin', 'external', 'apikey'):
+            raise ValueError(f"auth mode must be 'builtin', 'external' or 'apikey', not {self.mode!r}")
         if self.mode == 'external' and not self.issuer_url:
             raise ValueError('external auth mode needs issuer_url (TANGENTSWARM_AUTH_ISSUER)')
         return self
