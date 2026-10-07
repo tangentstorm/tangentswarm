@@ -72,6 +72,75 @@ def save_config(config):
 def print_usage():
     print("Usage: swarm.py [<repo_name>] <branch_name>")
     print("       swarm.py -c status")
+    print("")
+    print("Agent / swarm tools (run in a control dir holding workers.jsonl, as in scialect):")
+    print("       swarm -c local-status                 worker status table")
+    print("       swarm -c tell-worker <worker> <verb> [arg]")
+    print("       swarm -c step                         propose and run the next handoff")
+    print("       swarm -c for-all '<cmd>'              run a command in every worker dir")
+    print("       swarm -c agent-status <tmux-target>   detected agent + prompt state")
+    print("       swarm -c tell-agent <tmux-target> <text...>")
+    print("Cloud sessions and MCP auth:")
+    print("       swarm cloud <login|list|status|open|wait|serve|orchestrator|client|sessions>")
+    print("       swarm auth <set-password|approve|client|token|show-config>")
+    print("MCP server: swarm-mcp (stdio) or swarm-mcp --http")
+
+
+def _agent_status(argv):
+    import json as _json
+    from . import agents
+    if len(argv) != 1:
+        print("Usage: swarm -c agent-status <tmux-target>", file=sys.stderr)
+        return 1
+    print(_json.dumps(agents.agent_status(argv[0]), indent=2))
+    return 0
+
+
+def _tell_agent(argv):
+    from . import agents
+    if len(argv) < 2:
+        print("Usage: swarm -c tell-agent <tmux-target> <text...>", file=sys.stderr)
+        return 1
+    try:
+        agents.tell_agent(argv[0], ' '.join(argv[1:]))
+    except agents.AgentNotReady as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    return 0
+
+
+def run_subcommand(name, argv):
+    """New subcommands (scialect ports, cloud, auth). Returns an exit code."""
+    if name == 'cloud':
+        from .cloud import cli as cloud_cli
+        return cloud_cli.main(argv)
+    if name == 'auth':
+        from . import auth_cli
+        return auth_cli.main(argv)
+    if name == 'local-status':
+        from . import local_status
+        return local_status.main(argv)
+    if name == 'tell-worker':
+        from . import tell_worker
+        return tell_worker.main(argv)
+    if name == 'for-all':
+        from . import for_all
+        return for_all.main(argv)
+    if name == 'step':
+        from . import local_step
+        return local_step.main(argv)
+    if name == 'agent-status':
+        return _agent_status(argv)
+    if name == 'tell-agent':
+        return _tell_agent(argv)
+    raise KeyError(name)
+
+
+# `swarm cloud ...` / `swarm auth ...` are reserved words; everything else new
+# lives behind `-c` so `swarm [<repo>] <branch>` keeps its meaning.
+BARE_SUBCOMMANDS = ('cloud', 'auth')
+DASH_C_SUBCOMMANDS = ('local-status', 'tell-worker', 'for-all', 'step', 'agent-status',
+                      'tell-agent', 'cloud', 'auth')
 
 def get_args():
     """Parse command line arguments and return command, repo_name, repo_url, and branch_name."""
@@ -813,6 +882,12 @@ def show_branch_status():
                 print(f"\nError: {e}")
 
 def main():
+    argv = sys.argv[1:]
+    if argv and argv[0] in BARE_SUBCOMMANDS:
+        sys.exit(run_subcommand(argv[0], argv[1:]))
+    if len(argv) >= 2 and argv[0] == '-c' and argv[1] in DASH_C_SUBCOMMANDS:
+        sys.exit(run_subcommand(argv[1], argv[2:]))
+
     # Load arguments
     command, repo_name, repo_url, branch_name = get_args()
 

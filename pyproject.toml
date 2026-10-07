@@ -5,22 +5,29 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tangentswarm"
 dynamic = ["version"]
-description = "tmux-based swarm launcher and an MCP server for driving tmux sessions"
+description = "tmux-based swarm launcher, coding-agent orchestration and an MCP server (stdio + OAuth HTTP)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "PyYAML",
-    "mcp",
+    "mcp>=2.3,<3",
+    "PyJWT[crypto]>=2.8",
+    "uvicorn",
 ]
 
 [project.optional-dependencies]
-test = ["pytest"]
+cloud = ["playwright>=1.45", "websockets>=13"]
+test = ["pytest", "websockets>=13"]
 
 [project.scripts]
 swarm = "tangentswarm.cli:main"
+swarm-mcp = "tangentswarm.mcp_server:main"
 
 [tool.setuptools]
-packages = ["tangentswarm"]
+packages = ["tangentswarm", "tangentswarm.cloud"]
 
 [tool.setuptools.dynamic]
 version = { attr = "tangentswarm.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
