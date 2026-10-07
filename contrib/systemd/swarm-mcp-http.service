@@ -1,0 +1,21 @@
+# systemd *user* unit for swarm-mcp's Streamable HTTP mode, bound to loopback.
+#
+#   cp contrib/systemd/swarm-mcp-http.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user start swarm-mcp-http      # (enable only once you mean it)
+#
+# Keep --host 127.0.0.1. Exposing it beyond loopback (reverse proxy, TLS,
+# public hostname) gives remote shell access to anyone holding a token with
+# the tangentswarm:shell scope -- see README "Exposing it publicly later".
+[Unit]
+Description=tangentswarm MCP server (Streamable HTTP + OAuth, loopback only)
+
+[Service]
+ExecStart=%h/.venvs/tangentswarm/bin/swarm-mcp --http --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

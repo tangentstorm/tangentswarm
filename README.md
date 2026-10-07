@@ -399,6 +399,8 @@ and point the MCP client at ssh:
 swarm-mcp --http --host 127.0.0.1 --port 8765        # endpoint: http://127.0.0.1:8765/mcp
 ```
 
+A systemd user unit for this lives in `contrib/systemd/swarm-mcp-http.service`.
+
 The server is an OAuth 2.0 **resource server** built on the MCP SDK's auth support:
 
 - `GET /.well-known/oauth-protected-resource/mcp` -- Protected Resource Metadata (RFC 9728)
