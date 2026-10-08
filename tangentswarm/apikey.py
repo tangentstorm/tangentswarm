@@ -18,8 +18,9 @@ in apikey mode when no key is configured or the key is shorter than 32 character
 Generate one with ``swarm-mcp --gen-api-key [PATH]`` (written 0600, nothing printed).
 
 A valid key grants every scope (tangentswarm:read and tangentswarm:shell). There is no
-arbitrary-command tool, but send_keys/tell_agent type into panes and new_session/new_window
-can start commands, so treat the key like an SSH private key.
+arbitrary-command tool: start_agent only launches the registered coding agents and
+send_keys/tell_agent only type into panes running one. Those agents can still run
+commands when told to, so treat the key like an SSH private key.
 """
 from __future__ import annotations
 

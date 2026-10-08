@@ -21,7 +21,7 @@ Metadata per RFC 9728, the authorization-server routes) and plugs in either:
 
 Scopes:  tangentswarm:read  is required for every request (list/capture/status);
          tangentswarm:shell is additionally required by tools that type into
-         panes or start sessions/windows (send_keys, tell_agent, new_session, ...).
+         agent panes or start agents (send_keys, tell_agent, start_agent, ...).
 
 No secret is ever stored in the repo.  Tokens, client secrets and approval
 codes are stored only as SHA-256 hashes; the admin password as a scrypt hash.

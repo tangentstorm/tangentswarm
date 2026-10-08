@@ -181,6 +181,17 @@ def send_keys_literal(target, text, enter=True, enter_delay=ENTER_DELAY):
         _run([TMUX, 'send-keys', '-t', target, 'Enter'], check=True)
 
 
+def run_checked(argv):
+    """Run tmux with an argv list; raise TmuxError on a non-zero exit."""
+    return _run(argv, check=True)
+
+
+def display(target, fmt):
+    """Expand a -F format for the pane `target` resolves to (the same pane send-keys would
+    use). Raises TmuxError if the target does not exist."""
+    return _run([TMUX, 'display-message', '-p', '-t', target, fmt], check=True).stdout.rstrip('\n')
+
+
 def _created_info(result):
     row = parse_format_output(result.stdout, PANE_FIELDS)
     return row[0] if row else {}

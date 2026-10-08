@@ -14,10 +14,13 @@ Transports
 Scopes (OAuth HTTP modes only; stdio is authenticated by SSH, and a valid API key
 in apikey mode grants every scope)
   tangentswarm:read   list/capture/status tools  (required for every request)
-  tangentswarm:shell  tools that type into panes or start sessions/windows
+  tangentswarm:shell  tools that type into agent panes or start agents
 
 There is deliberately NO arbitrary-command tool (shell_exec was removed) and NO
-kill-pane / kill-window / kill-session tools.
+kill-pane / kill-window / kill-session tools. start_agent only launches the fixed
+agents in tangentswarm/registry.py (no caller-supplied command or arguments) in a
+directory under the agent root, and every typing tool refuses a pane whose foreground
+process is not one of those agents (a bash prompt, say).
 Nothing but MCP protocol traffic goes to stdout; logs go to stderr.
 """
 import argparse
@@ -29,14 +32,16 @@ import sys
 
 import anyio
 
-from . import __version__, agents, tmux
+from . import __version__, agents, registry, tmux
 from .auth import SCOPE_READ, SCOPE_SHELL
 
 from mcp.server.mcpserver import MCPServer as _Server   # mcp 2.x (FastMCP was renamed)
 
-INSTRUCTIONS = """Drive tmux on this host. Read with list_sessions/list_panes/capture_pane,
-check agents with agent_status/pane_ready/wait_for_idle, type with send_keys or tell_agent
-(literal text, then Enter after a 0.5s pause).
+INSTRUCTIONS = """Drive coding agents in tmux on this host. Read with list_sessions/list_panes/
+capture_pane, check agents with agent_status/pane_ready/wait_for_idle, start one with
+start_agent (see list_agents), and talk to it with tell_agent or send_keys (literal text,
+then Enter after a 0.5s pause). Typing is only allowed into panes whose foreground process
+is a registered agent (claude, muse, grok, gemini, codex) -- never into a shell.
 Targets use tmux syntax: session, session:window, session:window.pane or %pane_id.
 cloud_* tools talk to Claude Code cloud sessions through the tangentswarm cloud hub
 (`swarm cloud serve`, ws://127.0.0.1:5002/ws). There are no kill tools and no
@@ -147,39 +152,47 @@ def capture_pane(target: str, history_lines: int | None = None, escapes: bool = 
 
 @_scoped(SCOPE_SHELL)
 async def send_keys(target: str, text: str, enter: bool = True, literal: bool = True) -> dict:
-    """Type into a pane. literal=true (default) sends the text verbatim with send-keys -l,
-    then (if enter) waits 0.5s and presses Enter in a separate call. literal=false passes
-    `text` as tmux key names (e.g. 'C-c', 'Escape', 'Up')."""
+    """Type into a coding agent's pane (refused unless the pane's foreground process is a
+    registered agent -- never a shell). literal=true (default) sends the text verbatim with
+    send-keys -l, then (if enter) waits 0.5s and presses Enter in a separate call.
+    literal=false passes `text` as tmux key names (e.g. 'C-c', 'Escape', 'Up')."""
     def run():
+        pane = agents.require_agent_pane(target)
+        pid = pane['pane_id']
         if literal:
-            tmux.send_keys_literal(target, text, enter=enter)
+            tmux.send_keys_literal(pid, text, enter=enter)
         else:
-            r = tmux.send_keys(target, text, enter=enter)
+            r = tmux.send_keys(pid, text, enter=enter)
             if r.returncode != 0:
                 raise RuntimeError(f"send-keys failed for {target}")
+        return pane
     try:
-        await anyio.to_thread.run_sync(run)
+        pane = await anyio.to_thread.run_sync(run)
     except tmux.TmuxError as e:
         raise _err(e)
-    return {'target': target, 'sent_chars': len(text), 'enter': enter, 'literal': literal}
+    return {'target': target, 'pane_id': pane['pane_id'], 'agent': pane['agent'],
+            'sent_chars': len(text), 'enter': enter, 'literal': literal}
+
+
+@_scoped(SCOPE_READ)
+def list_agents() -> dict:
+    """The agents start_agent can launch: name, installed, binary path, exact argv, and
+    adapter level (full = prompt detection verified; basic = detector ported, unverified
+    here; none = start/type only, tell_agent needs require_empty_prompt=false). Also the
+    project root start_agent's cwd must be under."""
+    return {'agents': registry.registry_info(), 'cwd_root': registry.agent_root()}
 
 
 @_scoped(SCOPE_SHELL)
-def new_session(name: str, cwd: str | None = None, command: str | None = None) -> dict:
-    """Create a detached tmux session (optionally in cwd, running command). Returns its first pane."""
+def start_agent(agent: registry.AgentName, cwd: str, session: str = 'agents',
+                window_name: str | None = None) -> dict:
+    """Start a registered coding agent (no other command can be run) in a new window of
+    `session` (created if missing), without switching clients. cwd: a project directory
+    under the agent root (~/ver by default; absolute or relative to it; symlinks may not
+    escape). window_name: kebab-case, default '<agent>-<dir>'. The agent is the window's
+    own process, so the window closes when the agent exits. Returns the new pane."""
     try:
-        return tmux.new_session(name, cwd=cwd, command=command)
-    except tmux.TmuxError as e:
-        raise _err(e)
-
-
-@_scoped(SCOPE_SHELL)
-def new_window(session: str, name: str | None = None, cwd: str | None = None,
-               command: str | None = None) -> dict:
-    """Create a window in an existing session at the next free index, without switching
-    clients to it. Returns the new pane."""
-    try:
-        return tmux.new_window(session, name=name, cwd=cwd, command=command)
+        return registry.start_agent(agent, cwd, session=session, window_name=window_name)
     except tmux.TmuxError as e:
         raise _err(e)
 
@@ -251,10 +264,19 @@ async def tell_worker(control_dir: str, worker: str, verb: str, arg: str | None 
     rebase [branch], or for the manager: review|approve-task|unblock <worker>."""
     import io
     from .tell_worker import TellWorker, TellWorkerError
+
+    def guarded_agent(w):
+        # only hand off to a pane running a registered agent (never a shell)
+        try:
+            return agents.require_agent_pane(w.target)['agent']
+        except agents.AgentNotReady as e:
+            raise TellWorkerError(f"{w.id}: {e}") from e
+
     buf = io.StringIO()
     args = [worker, verb] + ([arg] if arg else [])
     try:
-        await anyio.to_thread.run_sync(lambda: TellWorker(control_dir, out=buf).run(*args))
+        await anyio.to_thread.run_sync(
+            lambda: TellWorker(control_dir, out=buf, agent_detector=guarded_agent).run(*args))
     except TellWorkerError as e:
         return {'ok': False, 'error': str(e), 'log': buf.getvalue().splitlines()}
     return {'ok': True, 'log': buf.getvalue().splitlines()}
@@ -299,7 +321,7 @@ async def cloud_wait_for_response(session_id: str, text: str | None = None, time
     return await _cloud().cloud_wait_for_response(session_id, text, timeout_sec, poll_ms)
 
 
-TOOLS = [list_sessions, list_panes, capture_pane, send_keys, new_session, new_window,
+TOOLS = [list_sessions, list_panes, capture_pane, send_keys, list_agents, start_agent,
          agent_status, pane_ready, wait_for_idle, tell_agent, swarm_status, tell_worker,
          cloud_list_sessions, cloud_send_message, cloud_get_latest_response, cloud_wait_for_response]
 

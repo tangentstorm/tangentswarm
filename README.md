@@ -345,24 +345,65 @@ The websocket protocol is unchanged from scialect (JSON frames, `id`-correlated 
 | `list_sessions` | read | tmux sessions: name, id, windows, attached, created |
 | `list_panes(target?, all?)` | read | panes: session, window index/name, pane index/id, active, command, path, size |
 | `capture_pane(target, history_lines?, escapes?)` | read | pane text (`-S -N` scrollback, `-e` escapes) |
-| `send_keys(target, text, enter=true, literal=true)` | shell | literal text, 0.5s, separate Enter; `literal=false` for key names |
-| `new_session(name, cwd?, command?)` | shell | detached session |
-| `new_window(session, name?, cwd?, command?)` | shell | window at the next index, no client switch |
-| `agent_status(target)` | read | detected agent, prompt blank?, last lines |
+| `send_keys(target, text, enter=true, literal=true)` | shell | agent panes only: literal text, 0.5s, separate Enter; `literal=false` for key names |
+| `list_agents` | read | the registered agents: installed?, binary, exact argv, adapter level; the cwd root |
+| `start_agent(agent, cwd, session="agents", window_name?)` | shell | start a registered agent (enum) in a new window under the cwd root |
+| `agent_status(target)` | read | registered agent in the pane's foreground, typeable?, prompt blank?, last lines |
 | `pane_ready(target, probe=false)` | read (probe: shell) | is the agent's prompt empty |
 | `wait_for_idle(target, timeout_sec=120, poll_ms, settle_sec)` | read | screen stable + prompt blank |
-| `tell_agent(target, text, new_conversation?, require_empty_prompt=true)` | shell | tell-worker send sequence |
+| `tell_agent(target, text, new_conversation?, require_empty_prompt=true)` | shell | agent panes only: tell-worker send sequence |
 | `swarm_status(control_dir)` | read | local-status rows |
-| `tell_worker(control_dir, worker, verb, arg?)` | shell | state-machine handoff |
+| `tell_worker(control_dir, worker, verb, arg?)` | shell | state-machine handoff (agent panes only) |
 | `cloud_list_sessions` | read | claude.ai/code sidebar sessions (needs `swarm cloud serve`) |
 | `cloud_send_message(session_id, text)` | shell | send to a cloud session |
 | `cloud_get_latest_response(session_id)` | read | last transcript message |
 | `cloud_wait_for_response(session_id, text?, timeout_sec=120, poll_ms=1500)` | shell | send, then poll until settled (max 600s) |
 
 There are deliberately **no** kill-pane / kill-window / kill-session tools, and **no**
-arbitrary-command tool (`shell_exec` was removed): agents are driven through their panes
-with `tell_agent` / `send_keys`. stdout carries nothing but MCP protocol traffic; logs go
-to stderr.
+arbitrary-command tool (`shell_exec`, and the free `command` of `new_session` /
+`new_window`, are gone): agents are started with `start_agent` and driven through their
+panes with `tell_agent` / `send_keys`. stdout carries nothing but MCP protocol traffic;
+logs go to stderr.
+
+### Agent registry and the typing guard
+
+`tangentswarm/registry.py` holds a fixed allowlist; nothing else can be launched and the
+caller cannot add arguments:
+
+| agent | binary (first that exists) | fixed flags | adapter |
+| --- | --- | --- | --- |
+| `claude` | `~/.npm-global/bin/claude`, `~/workspace/.npm-global/bin/claude`, ... | | full (❯ box between ─ bars; dim suggestions ignored) |
+| `muse` | `~/.local/bin/muse` (launcher; execs `muse-bin-<version>`) | `--trust-workspace` | full (❯ box between ─ bars; grey placeholder ignored; `/new`) |
+| `codex` | `~/.npm-global/bin/codex`, ... | | basic (› prompt, ported from scialect) |
+| `gemini` | `~/.npm-global/bin/gemini`, `/usr/local/bin/gemini`, ... | | basic (> prompt, ported from scialect) |
+| `grok` | `~/.grok/bin/grok` | | none: start/type only; `tell_agent` needs `require_empty_prompt=false` |
+
+An agent that is not installed is still listed (`list_agents` shows `installed: false`);
+starting it fails with "not installed". The operator can point an agent at another binary
+with `TANGENTSWARM_AGENT_<NAME>=/abs/path`.
+
+- **start_agent** runs `[binary, *flags]` as the new window's own process: tmux gets the
+  argv as separate arguments and execs it without a shell (flag-less agents go through
+  `/usr/bin/env --` so tmux never falls back to `sh -c`). When the agent exits the window
+  closes, so no shell prompt is left behind. `cwd` must resolve (after symlinks) to an
+  existing directory strictly inside `$TANGENTSWARM_AGENT_ROOT` (default `~/ver`);
+  `session` matches `[A-Za-z0-9_-]{1,40}` and is created if missing; `window_name` is
+  kebab-case (default `<agent>-<dir>`).
+- **send_keys / tell_agent / pane_ready(probe=true) / tell_worker** resolve the target to
+  the exact pane (`display-message -t`, the same pane send-keys would hit), list the
+  processes on its tty and only proceed if a process in the terminal's *foreground*
+  process group (`+` in `ps` stat) is a registered agent. A bash prompt, a dead pane, or a
+  shell whose agent was suspended with C-z is refused. Keys are then sent to that pane id.
+- Agent recognition looks at the process's comm, argv[0] and -- for node/bun/deno -- the
+  script name, never at the rest of the command line (prompts often mention other agents).
+- Prompt detection uses an escape-coded capture: text drawn dim or in grey (Claude's
+  prompt suggestions, Muse's placeholder) counts as an empty prompt, normal-colour text as
+  real input.
+
+What the guard does *not* change: the agents themselves can run commands (Claude's `!`
+bash mode, or simply asking them, and approval prompts can be answered with `send_keys`).
+A key that can talk to agents can therefore still get work done as the server's user;
+it just can no longer type into a shell or launch an arbitrary program directly.
 
 ### stdio over SSH (recommended)
 
@@ -519,8 +560,8 @@ swarm-mcp --http --auth-mode apikey --host 127.0.0.1 --port 8766 \
   Configuring a key selects apikey mode unless `--auth-mode` / `TANGENTSWARM_AUTH_MODE`
   says otherwise. The server refuses to start in apikey mode without a key (or with one
   shorter than 32 characters).
-- A valid key grants every scope (typing into panes with `send_keys`/`tell_agent`,
-  starting sessions/windows): treat it like an SSH private key. Rotate by deleting the file, `--gen-api-key` again, and restarting.
+- A valid key grants every scope (typing into agent panes with `send_keys`/`tell_agent`,
+  starting registered agents): treat it like an SSH private key. Rotate by deleting the file, `--gen-api-key` again, and restarting.
 - No OAuth routes (`/register`, `/token`, `/login`, metadata) are served in this mode.
 - `--public-url` must name the externally visible URL when behind a reverse proxy, so the
   DNS-rebinding Host check accepts the proxied Host header.
