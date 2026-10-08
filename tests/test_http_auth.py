@@ -138,7 +138,7 @@ def test_bad_token_is_401():
         assert Mcp(srv, 'tsw_not-a-real-token').initialize()[0] == 401
 
 
-def test_preissued_token_and_scope_enforcement():
+def test_preissued_token_and_scope_enforcement(tmp_path):
     store = A.AuthStore()
     full, _, _ = store.issue_token('memnar', A.ALL_SCOPES, 3600)
     ro, _, _ = store.issue_token('viewer', [A.SCOPE_READ], 3600)
@@ -151,15 +151,16 @@ def test_preissued_token_and_scope_enforcement():
         m = Mcp(srv, full)
         assert m.initialize()[0] == 200
         tools = [t['name'] for t in m.call('tools/list')['result']['tools']]
-        assert 'shell_exec' in tools and not [t for t in tools if 'kill' in t]
-        res = m.call('tools/call', {'name': 'shell_exec', 'arguments': {'command': 'echo hi', 'cwd': '/tmp'}})
-        assert not res['result'].get('isError') and '"stdout": "hi\\n"' in res['result']['content'][0]['text']
-        log = json.loads(open(A.paths.state_dir() / 'shell_exec.log').read().splitlines()[-1])
-        assert log['principal']['client_id'] == 'memnar'
+        assert 'tell_agent' in tools and 'shell_exec' not in tools
+        assert not [t for t in tools if 'kill' in t]
+        (tmp_path / 'workers.jsonl').write_text('')     # unknown worker: refused without touching tmux
+        worker_args = {'control_dir': str(tmp_path), 'worker': 'nobody', 'verb': 'accept'}
+        res = m.call('tools/call', {'name': 'tell_worker', 'arguments': worker_args})
+        assert not res['result'].get('isError') and '"ok": false' in res['result']['content'][0]['text']
 
         r = Mcp(srv, ro)
         assert r.initialize()[0] == 200
-        res = r.call('tools/call', {'name': 'shell_exec', 'arguments': {'command': 'echo no'}})
+        res = r.call('tools/call', {'name': 'tell_worker', 'arguments': worker_args})
         assert res['result']['isError'] and 'insufficient_scope' in res['result']['content'][0]['text']
         res = r.call('tools/call', {'name': 'send_keys', 'arguments': {'target': 'x:0', 'text': 'no'}})
         assert res['result']['isError'] and 'tangentswarm:shell' in res['result']['content'][0]['text']
@@ -278,7 +279,7 @@ def test_external_jwt_validation(jwks_env):
         assert Mcp(srv, make_jwt(other, aud, A.SCOPE_READ)).initialize()[0] == 401
         ro = Mcp(srv, make_jwt(key, aud, A.SCOPE_READ))
         assert ro.initialize()[0] == 200
-        res = ro.call('tools/call', {'name': 'shell_exec', 'arguments': {'command': 'echo x'}})
+        res = ro.call('tools/call', {'name': 'send_keys', 'arguments': {'target': 'x:0', 'text': 'no'}})
         assert res['result']['isError'] and 'insufficient_scope' in res['result']['content'][0]['text']
         # PRM points at the external issuer
         prm = json.loads(http('GET', srv.base + '/.well-known/oauth-protected-resource/mcp')[2])

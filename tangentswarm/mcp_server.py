@@ -14,11 +14,11 @@ Transports
 Scopes (OAuth HTTP modes only; stdio is authenticated by SSH, and a valid API key
 in apikey mode grants every scope)
   tangentswarm:read   list/capture/status tools  (required for every request)
-  tangentswarm:shell  tools that run commands or type into panes
+  tangentswarm:shell  tools that type into panes or start sessions/windows
 
-There are deliberately NO kill-pane / kill-window / kill-session tools.
-Nothing but MCP protocol traffic goes to stdout; logs go to stderr and to
-~/.local/state/tangentswarm/shell_exec.log.
+There is deliberately NO arbitrary-command tool (shell_exec was removed) and NO
+kill-pane / kill-window / kill-session tools.
+Nothing but MCP protocol traffic goes to stdout; logs go to stderr.
 """
 import argparse
 import functools
@@ -29,17 +29,18 @@ import sys
 
 import anyio
 
-from . import __version__, agents, shell, tmux
+from . import __version__, agents, tmux
 from .auth import SCOPE_READ, SCOPE_SHELL
 
 from mcp.server.mcpserver import MCPServer as _Server   # mcp 2.x (FastMCP was renamed)
 
 INSTRUCTIONS = """Drive tmux on this host. Read with list_sessions/list_panes/capture_pane,
 check agents with agent_status/pane_ready/wait_for_idle, type with send_keys or tell_agent
-(literal text, then Enter after a 0.5s pause), run commands with shell_exec (logged).
+(literal text, then Enter after a 0.5s pause).
 Targets use tmux syntax: session, session:window, session:window.pane or %pane_id.
 cloud_* tools talk to Claude Code cloud sessions through the tangentswarm cloud hub
-(`swarm cloud serve`, ws://127.0.0.1:5002/ws). There are no kill tools by design."""
+(`swarm cloud serve`, ws://127.0.0.1:5002/ws). There are no kill tools and no
+arbitrary-command tool by design."""
 
 # Set by run_http(); in stdio mode SSH has already authenticated the caller.
 AUTH_ENFORCED = False
@@ -54,20 +55,6 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 class ScopeError(ToolError):
     pass
-
-
-def current_principal():
-    if API_KEY_MODE:
-        from .apikey import PRINCIPAL
-        return dict(PRINCIPAL)
-    try:
-        from mcp.server.auth.middleware.auth_context import get_access_token
-    except ImportError:
-        return None
-    tok = get_access_token()
-    if tok is None:
-        return None
-    return {'client_id': tok.client_id, 'subject': tok.subject}
 
 
 def require_scope(scope):
@@ -197,14 +184,6 @@ def new_window(session: str, name: str | None = None, cwd: str | None = None,
         raise _err(e)
 
 
-@_scoped(SCOPE_SHELL)
-async def shell_exec(command: str, cwd: str | None = None, timeout: float = shell.DEFAULT_TIMEOUT) -> dict:
-    """Run a shell command with `bash -lc` and return exit_code, stdout, stderr, timed_out.
-    timeout is in seconds (default 60, max 600); cwd defaults to $HOME. Output over 64 KiB
-    per stream is truncated with a note. Every call is logged."""
-    return await shell.shell_exec(command, cwd=cwd, timeout=timeout, principal=current_principal())
-
-
 @_scoped(SCOPE_READ)
 async def agent_status(target: str) -> dict:
     """Which coding agent (claude, codex, gemini, opencode...) runs in a pane, whether its input
@@ -320,7 +299,7 @@ async def cloud_wait_for_response(session_id: str, text: str | None = None, time
     return await _cloud().cloud_wait_for_response(session_id, text, timeout_sec, poll_ms)
 
 
-TOOLS = [list_sessions, list_panes, capture_pane, send_keys, new_session, new_window, shell_exec,
+TOOLS = [list_sessions, list_panes, capture_pane, send_keys, new_session, new_window,
          agent_status, pane_ready, wait_for_idle, tell_agent, swarm_status, tell_worker,
          cloud_list_sessions, cloud_send_message, cloud_get_latest_response, cloud_wait_for_response]
 

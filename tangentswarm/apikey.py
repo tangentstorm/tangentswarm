@@ -17,8 +17,9 @@ A key file must not be readable by group/others (chmod 600).  The server refuses
 in apikey mode when no key is configured or the key is shorter than 32 characters.
 Generate one with ``swarm-mcp --gen-api-key [PATH]`` (written 0600, nothing printed).
 
-A valid key grants every scope (tangentswarm:read and tangentswarm:shell), i.e. full
-shell access as the server's user -- treat it like an SSH private key.
+A valid key grants every scope (tangentswarm:read and tangentswarm:shell). There is no
+arbitrary-command tool, but send_keys/tell_agent type into panes and new_session/new_window
+can start commands, so treat the key like an SSH private key.
 """
 from __future__ import annotations
 
@@ -35,7 +36,6 @@ ENV_KEY = 'TANGENTSWARM_API_KEY'
 ENV_KEY_FILE = 'TANGENTSWARM_API_KEY_FILE'
 KEY_PREFIX = 'tsw_'
 MIN_KEY_LEN = 32
-PRINCIPAL = {'client_id': 'api-key', 'subject': None}
 
 
 class ApiKeyError(RuntimeError):

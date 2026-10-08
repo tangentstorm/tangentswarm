@@ -269,7 +269,6 @@ tangentswarm/
   tmux.py          tmux wrappers (argv lists only; structured list_sessions/list_panes)
   git.py           git helpers
   mcp_server.py    swarm-mcp (stdio, or Streamable HTTP with OAuth or an API key)
-  shell.py         shell_exec with timeout, truncation and JSON-lines logging
   auth.py          OAuth resource server + optional built-in authorization server
   auth_cli.py      swarm auth ...
   agents.py        agent detection, prompt-empty detection, space probe, tell/wait
@@ -349,7 +348,6 @@ The websocket protocol is unchanged from scialect (JSON frames, `id`-correlated 
 | `send_keys(target, text, enter=true, literal=true)` | shell | literal text, 0.5s, separate Enter; `literal=false` for key names |
 | `new_session(name, cwd?, command?)` | shell | detached session |
 | `new_window(session, name?, cwd?, command?)` | shell | window at the next index, no client switch |
-| `shell_exec(command, cwd?, timeout=60)` | shell | `bash -lc`, max 600s; exit_code/stdout/stderr/timed_out; logged |
 | `agent_status(target)` | read | detected agent, prompt blank?, last lines |
 | `pane_ready(target, probe=false)` | read (probe: shell) | is the agent's prompt empty |
 | `wait_for_idle(target, timeout_sec=120, poll_ms, settle_sec)` | read | screen stable + prompt blank |
@@ -361,12 +359,10 @@ The websocket protocol is unchanged from scialect (JSON frames, `id`-correlated 
 | `cloud_get_latest_response(session_id)` | read | last transcript message |
 | `cloud_wait_for_response(session_id, text?, timeout_sec=120, poll_ms=1500)` | shell | send, then poll until settled (max 600s) |
 
-There are deliberately **no** kill-pane / kill-window / kill-session tools.
-
-Every `shell_exec` call is appended as a JSON line to
-`~/.local/state/tangentswarm/shell_exec.log` (timestamp, cwd, command, timeout, exit
-code, duration, timed_out, output lengths, and the OAuth client in HTTP mode -- never the
-output) and echoed to stderr. stdout carries nothing but MCP protocol traffic.
+There are deliberately **no** kill-pane / kill-window / kill-session tools, and **no**
+arbitrary-command tool (`shell_exec` was removed): agents are driven through their panes
+with `tell_agent` / `send_keys`. stdout carries nothing but MCP protocol traffic; logs go
+to stderr.
 
 ### stdio over SSH (recommended)
 
@@ -408,8 +404,8 @@ The server is an OAuth 2.0 **resource server** built on the MCP SDK's auth suppo
 - Requests without a valid bearer token get `401` with
   `WWW-Authenticate: Bearer ... resource_metadata="..."`; a token lacking
   `tangentswarm:read` gets `403 insufficient_scope`.
-- `tangentswarm:read` is required for every request; tools that execute commands or type
-  into panes additionally need `tangentswarm:shell` (see the table).
+- `tangentswarm:read` is required for every request; tools that type into panes or start
+  sessions/windows additionally need `tangentswarm:shell` (see the table).
 
 Two authorization-server modes (`TANGENTSWARM_AUTH_MODE`, default `builtin`):
 
@@ -499,7 +495,7 @@ async def main():
         async with streamable_http_client(url, http_client=http) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                print(await session.call_tool("shell_exec", {"command": "echo hi", "cwd": "/tmp"}))
+                print(await session.call_tool("list_sessions", {}))
 
 asyncio.run(main())
 ```
@@ -523,8 +519,8 @@ swarm-mcp --http --auth-mode apikey --host 127.0.0.1 --port 8766 \
   Configuring a key selects apikey mode unless `--auth-mode` / `TANGENTSWARM_AUTH_MODE`
   says otherwise. The server refuses to start in apikey mode without a key (or with one
   shorter than 32 characters).
-- A valid key grants every scope, i.e. `shell_exec` as the server's user: treat it like an
-  SSH private key. Rotate by deleting the file, `--gen-api-key` again, and restarting.
+- A valid key grants every scope (typing into panes with `send_keys`/`tell_agent`,
+  starting sessions/windows): treat it like an SSH private key. Rotate by deleting the file, `--gen-api-key` again, and restarting.
 - No OAuth routes (`/register`, `/token`, `/login`, metadata) are served in this mode.
 - `--public-url` must name the externally visible URL when behind a reverse proxy, so the
   DNS-rebinding Host check accepts the proxied Host header.
@@ -542,7 +538,7 @@ off` and a long `proxy_read_timeout` (SSE streams).
    `swarm-mcp --http --host 127.0.0.1 --port 8765 --public-url https://swarm.example.com/mcp`
    (an `issuer_url` on https; for builtin mode it defaults to `https://swarm.example.com`).
 3. Set an admin password (`swarm auth set-password`) or switch to an external issuer.
-4. Consider issuing only `tangentswarm:read` to clients that don't need `shell_exec`.
+4. Consider issuing only `tangentswarm:read` to clients that don't need to type into panes.
 
 ## License
 

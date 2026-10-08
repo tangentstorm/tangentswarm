@@ -61,12 +61,16 @@ def test_valid_key_initializes_lists_and_runs_tools(tmp_path, header):
         m = KeyMcp(srv, KEY, header)
         assert m.initialize()[0] == 200
         tools = [t['name'] for t in m.call('tools/list')['result']['tools']]
-        assert 'shell_exec' in tools and not [t for t in tools if 'kill' in t]
-        res = m.call('tools/call', {'name': 'shell_exec', 'arguments': {'command': 'echo hi', 'cwd': '/tmp'}})
-        assert not res['result'].get('isError') and '"stdout": "hi\\n"' in res['result']['content'][0]['text']
-        log = json.loads(open(K.paths.state_dir() / 'shell_exec.log').read().splitlines()[-1])
-        assert log['principal']['client_id'] == 'api-key'
-        assert KEY not in open(K.paths.state_dir() / 'shell_exec.log').read()
+        assert 'tell_agent' in tools and not [t for t in tools if 'kill' in t]
+        assert 'shell_exec' not in tools
+        # a shell-scope tool runs with the key (unknown worker: refused without touching tmux)
+        (tmp_path / 'workers.jsonl').write_text('')
+        res = m.call('tools/call', {'name': 'tell_worker',
+                                    'arguments': {'control_dir': str(tmp_path), 'worker': 'nobody', 'verb': 'accept'}})
+        text = res['result']['content'][0]['text']
+        assert not res['result'].get('isError') and '"ok": false' in text and 'nobody' in text
+        res = m.call('tools/call', {'name': 'shell_exec', 'arguments': {'command': 'echo hi'}})
+        assert 'error' in res or res['result'].get('isError')
 
 
 def test_env_key_selects_apikey_mode(monkeypatch):

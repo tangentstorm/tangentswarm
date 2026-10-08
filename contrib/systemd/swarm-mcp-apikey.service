@@ -6,7 +6,7 @@
 #   # edit --public-url to the externally visible URL of the endpoint (Host check)
 #   systemctl --user daemon-reload && systemctl --user enable --now swarm-mcp-apikey
 #
-# The key grants full shell access as this user (shell_exec, send_keys...): every request
+# The key lets a client type into this user's tmux panes (send_keys, tell_agent...): every request
 # without it gets 401 before any MCP handling. Keep --host 127.0.0.1.
 [Unit]
 Description=tangentswarm MCP server (Streamable HTTP + API key, loopback only)
