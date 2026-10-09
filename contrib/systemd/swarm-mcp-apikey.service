@@ -16,10 +16,17 @@
 # systemctl --user restart swarm-mcp-apikey.
 #
 # --public-url also sets the only non-loopback Host the app accepts, so a reverse proxy serving
-# the endpoint under another hostname must send that Host (e.g. proxy_set_header Host
-# swarm.tangentcode.com). On tangentcode.com the endpoint is the bare path
-# https://swarm.tangentcode.com/mcp/tmux: nginx `location = /mcp/tmux` proxies to
-# http://127.0.0.1:8766/mcp.
+# the endpoint under another hostname must send that Host. Example (nginx), serving the endpoint
+# at https://swarm.example.com/mcp:
+#
+#   location = /mcp {
+#       proxy_pass http://127.0.0.1:8766/mcp;
+#       proxy_http_version 1.1;
+#       proxy_set_header Host $host;
+#       proxy_set_header Connection "";
+#       proxy_buffering off;
+#       proxy_read_timeout 86400;
+#   }
 #
 # The key lets a client type into this user's tmux panes (send_keys, tell_agent...): every request
 # without it gets 401 before any MCP handling. Keep --host 127.0.0.1.
@@ -29,7 +36,7 @@ Description=tangentswarm MCP server (Streamable HTTP + API key, loopback only)
 [Service]
 Environment=TANGENTSWARM_API_KEY_FILE=%h/.config/tangentswarm/api_key
 WorkingDirectory=%h/srv/swarm-tmux
-ExecStart=%h/.venvs/swarm-tmux/bin/swarm-mcp --http --auth-mode apikey --host 127.0.0.1 --port 8766 --public-url https://swarm.tangentcode.com/mcp/tmux
+ExecStart=%h/.venvs/swarm-tmux/bin/swarm-mcp --http --auth-mode apikey --host 127.0.0.1 --port 8766 --public-url https://swarm.example.com/mcp
 Restart=on-failure
 RestartSec=5
 UMask=0077
