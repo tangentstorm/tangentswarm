@@ -1,9 +1,9 @@
 """Advance the swarm one handoff (port of scialect src/local-step.mts).
 
-Reads every worker's .sci/status-line, proposes the next legal transition(s)
-and runs the chosen one after an interactive y/N (or number) confirmation.
-Interactive CLI only -- deliberately not exposed as an MCP tool, because the
-PR-AWAIT step merges a pull request with `gh pr merge` once a human confirms.
+It reads every worker's .sci/status-line, proposes the next legal transitions, and
+runs the chosen one after you confirm with y/N or a number. It is an interactive CLI
+only, not an MCP tool, because the PR-AWAIT step merges a pull request with
+`gh pr merge` once a person confirms.
 """
 import random
 import re

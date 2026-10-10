@@ -1,4 +1,4 @@
-"""Forward requests to the browser-owning cloud server (port of scialect src/cloud-relay.mts)."""
+"""Forward requests to the cloud server that owns the browser (port of scialect src/cloud-relay.mts)."""
 import asyncio
 import json
 import sys
@@ -34,7 +34,7 @@ class CloudRelay:
                         if fut and not fut.done():
                             fut.set_result(msg)
                 print('[cloud-relay] cloud connection closed', file=sys.stderr)
-            except (OSError, Exception) as e:  # noqa: BLE001 - keep retrying like the TS version
+            except (OSError, Exception) as e:  # noqa: BLE001  (keep retrying, like the TS version)
                 if not isinstance(e, asyncio.CancelledError):
                     print(f'[cloud-relay] cloud connection error {e}', file=sys.stderr)
                 else:

@@ -8,8 +8,8 @@
   swarm auth token list [--all] | revoke <token_id>
   swarm auth show-config
 
-Secrets (client secrets, tokens, approval codes) are printed ONCE and only
-their SHA-256 hashes are stored in ~/.local/state/tangentswarm/auth.db.
+The CLI prints each secret (client secret, token or approval code) once and stores
+only its SHA-256 hash in ~/.local/state/tangentswarm/auth.db.
 """
 import argparse
 import getpass
@@ -22,7 +22,7 @@ from . import auth as A
 
 
 def parse_ttl(text):
-    """'3600', '90m', '12h', '30d', '0'/'never' -> seconds (0 = no expiry)."""
+    """Convert '3600', '90m', '12h', '30d', '0' or 'never' to seconds. 0 means no expiry."""
     if text in (None, '', '0', 'never', 'none'):
         return 0
     m = re.fullmatch(r'(\d+)([smhdw]?)', text.strip())
@@ -66,7 +66,7 @@ def main(argv):
     p.add_argument('client_id')
     pt = sub.add_parser('token').add_subparsers(dest='sub', required=True)
     p = pt.add_parser('issue')
-    p.add_argument('--client', required=True, help='label / client id the token is for (e.g. memnar)')
+    p.add_argument('--client', required=True, help='label / client id the token is for (e.g. my-client)')
     p.add_argument('--scopes', nargs='*')
     p.add_argument('--ttl', type=parse_ttl, default=parse_ttl('30d'), help='e.g. 12h, 30d, never (default 30d)')
     p.add_argument('--label')

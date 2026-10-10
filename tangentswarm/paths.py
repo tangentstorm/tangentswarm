@@ -26,7 +26,7 @@ def data_dir():
 
 
 def ensure_private_dir(path):
-    """Create path (and parents) and make it 0700."""
+    """Create path and its parents, and set its mode to 0700."""
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     try:
@@ -37,7 +37,7 @@ def ensure_private_dir(path):
 
 
 def write_private_file(path, data):
-    """Write text to path with mode 0600 (created that way, never world-readable)."""
+    """Write text to path. The file is created with mode 0600, so it is never world-readable."""
     path = Path(path)
     ensure_private_dir(path.parent)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

@@ -1,14 +1,15 @@
-"""Talking to coding agents (Claude Code, Codex, Gemini, ...) that run in tmux.
+"""Talk to coding agents (Claude Code, Codex, Gemini and others) that run in tmux.
 
-Port of scialect's src/agents/{tui-agent,claude-cli,codex-cli,gemini-cli}.mts
-plus the agent detection from tell-worker.mts / local-status.mts and the
-send sequence used by every tell-worker handoff:
+This is a port of scialect's src/agents/{tui-agent,claude-cli,codex-cli,gemini-cli}.mts,
+plus the agent detection from tell-worker.mts and local-status.mts. It also has the
+send sequence that every tell-worker handoff uses:
 
-    reach an empty prompt (space probe) -> [/new, 500ms, Enter, 10s]
-    -> type the text literally -> 500ms -> Enter
+1. Reach an empty prompt with the space probe.
+2. Optionally send /new, wait 500ms, press Enter and wait 10s.
+3. Type the text literally, wait 500ms and press Enter.
 
-The prompt-detection functions are pure (screen text in, bool out) so they
-can be unit-tested without tmux.
+The prompt-detection functions take screen text and return a bool, so the tests
+can run them without tmux.
 """
 import hashlib
 import os
@@ -22,8 +23,8 @@ from .workers import load_known_agents
 PROBE_SETTLE = 0.8       # after the space probe
 PROBE_RECHECK = 0.3
 PROBE_CLEANUP = 0.1      # after BSpace
-ENTER_DELAY = 0.5        # between text and Enter (TUIs drop fast Enters)
-NEW_CONVERSATION_WAIT = 10.0   # after "/new" + Enter
+ENTER_DELAY = 0.5        # between the text and Enter, because TUIs drop an Enter sent too soon
+NEW_CONVERSATION_WAIT = 10.0   # after "/new" and Enter
 
 
 # ---------------------------------------------------------------------------
@@ -36,8 +37,8 @@ def _bar_lines(lines):
 
 
 def claude_prompt_blank(screen):
-    """Claude Code: the input box sits between the two lowest ─ bars and
-    starts with ❯. Blank when nothing follows the ❯."""
+    """Return True if Claude Code's input line is blank. The input line sits between
+    the two lowest ─ bars and starts with ❯. It is blank when nothing follows the ❯."""
     lines = screen.split('\n')
     bars = _bar_lines(lines)
     if len(bars) < 2:
@@ -54,7 +55,7 @@ def claude_prompt_blank(screen):
 
 
 def codex_prompt_blank(screen):
-    """Codex: the last line containing › is the live input prompt."""
+    """Return True if Codex's prompt is blank. The last line that contains › is the live prompt."""
     for line in reversed(screen.split('\n')):
         if '›' in line:
             return line[line.find('›') + 1:].strip() == ''
@@ -62,8 +63,8 @@ def codex_prompt_blank(screen):
 
 
 def gemini_prompt_blank(screen):
-    """Gemini: like Claude, but the prompt symbol is '>' and the lowest '>'
-    between the two bottom bars wins."""
+    """Return True if Gemini's prompt is blank. The layout matches Claude Code, but the
+    prompt symbol is '>', and the lowest '>' between the two bottom bars counts."""
     lines = screen.split('\n')
     bars = _bar_lines(lines)
     if len(bars) < 2:
@@ -82,16 +83,17 @@ def gemini_prompt_blank(screen):
 
 
 def muse_prompt_blank(screen):
-    """Muse Code: same layout as Claude Code -- a ❯ input line between the two lowest
-    ─ bars, then a footer ('<model> · <effort> · <path> · Auto-review'). Muse draws a
-    placeholder ('Ask to monitor ...') in grey after the ❯, so feed this the
-    input_view() of an escape-coded capture; on plain text the placeholder reads as
-    typed input (the space probe then sees past it)."""
+    """Return True if Muse Code's input line is blank. The layout matches Claude Code, with
+    a ❯ input line between the two lowest ─ bars and then a footer
+    ('<model> · <effort> · <path> · Auto-review'). Muse draws a grey placeholder
+    ('Ask to monitor ...') after the ❯, so pass in the input_view() of an escape-coded
+    capture. On plain text the placeholder reads as typed input, and the space probe
+    then sees past it."""
     return claude_prompt_blank(screen)
 
 
 def is_muse_screen(screen):
-    """Muse's footer line: '<model> · <effort> · <path> · <approval mode>'."""
+    """Match Muse's footer line, '<model> · <effort> · <path> · <approval mode>'."""
     lines = [l for l in screen.split('\n') if l.strip()]
     return any(re.match(r'^\s*muse-[\w.-]+ · ', l) for l in lines[-4:])
 
@@ -105,8 +107,8 @@ PROMPT_DETECTORS = {
 
 
 def detector_for(agent):
-    """Map a detected agent name to its prompt detector (codex matches by
-    substring, as in tell-worker.mts)."""
+    """Return the prompt detector for a detected agent name. Codex matches by
+    substring, as in tell-worker.mts."""
     a = (agent or '').lower()
     if 'codex' in a:
         return codex_prompt_blank
@@ -114,12 +116,12 @@ def detector_for(agent):
 
 
 # ---------------------------------------------------------------------------
-# escape-coded captures: tell placeholder/suggestion text from real input
+# escape-coded captures, used to tell placeholder and suggestion text from real input
 
 _ESC_RE = re.compile(r'\x1b(?:\[([0-9;:?]*)([@-~])|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][0-9A-Za-z]|.)', re.S)
 # Grey foregrounds TUIs use for placeholders and suggestions (plus SGR 2, dim).
 _GREY_256 = set(range(239, 247)) | {8}
-_KEEP = set('❯›>') | {chr(c) for c in range(0x2500, 0x2580)}   # prompt glyphs + box drawing
+_KEEP = set('❯›>') | {chr(c) for c in range(0x2500, 0x2580)}   # prompt glyphs and box-drawing characters
 
 
 def strip_ansi(text):
@@ -127,10 +129,10 @@ def strip_ansi(text):
 
 
 def input_view(text):
-    """Plain text of an escape-coded capture (capture-pane -e) with every character
-    drawn dim or in grey blanked out, except prompt glyphs and box drawing. Claude Code
-    (prompt suggestions), Muse (placeholder) and Codex draw not-yet-typed hints that way,
-    while typed input is drawn in the normal colour."""
+    """Return the plain text of an escape-coded capture (capture-pane -e), with every
+    character drawn dim or in grey blanked out, except prompt glyphs and box drawing.
+    Claude Code (prompt suggestions), Muse (placeholder) and Codex draw hints that way,
+    and draw typed input in the normal colour."""
     out = []
     dim = False
     fg = None
@@ -205,7 +207,7 @@ class TuiAgent:
 
     def __init__(self, target, capture=None, send_literal=None, send_key=None, sleep=time.sleep):
         self.target = target
-        # escape-coded capture -> input_view(), so placeholders read as blank
+        # pass the escape-coded capture through input_view() so placeholders read as blank
         self._capture = capture or (lambda t: input_view(tmux.capture_pane(t, escapes=True)))
         self._send_literal = send_literal or (lambda t, s: tmux.send_keys_literal(t, s, enter=False))
         self._send_key = send_key or (lambda t, k: tmux.send_keys(t, k, enter=False))
@@ -218,11 +220,12 @@ class TuiAgent:
         return self.detect(self.screen())
 
     def ensure_prompt_is_empty(self):
-        """Non-destructive space probe (tui-agent.mts#ensurePromptIsEmpty).
+        """Check for an empty prompt without losing input (tui-agent.mts#ensurePromptIsEmpty).
 
-        Blank -> True.  Otherwise type a space: if the prompt now reads as
-        blank, the old text was placeholder/suggestion filler -> True; else
-        there is real user input -> False.  The space is always backspaced.
+        Return True if the prompt is blank. Otherwise type a space. If the prompt
+        then reads as blank, the old text was a placeholder or suggestion, so return
+        True. If not, someone has typed real input, so return False. The probe always
+        deletes its space with a backspace.
         """
         if self.is_prompt_blank():
             return True
@@ -244,7 +247,7 @@ class TuiAgent:
             self._send_key(self.target, 'Enter')
 
     def new_conversation(self):
-        """'/new', 500ms, Enter, then wait 10s for the fresh session."""
+        """Send '/new', wait 500ms, press Enter, then wait 10s for the fresh session."""
         self.send_text('/new')
         self._sleep(NEW_CONVERSATION_WAIT)
 
@@ -265,13 +268,13 @@ class GeminiTui(TuiAgent):
 
 
 class MuseTui(TuiAgent):
-    """Muse Code: Enter submits; /new (or /clear) starts a fresh session."""
+    """Muse Code. Enter submits, and /new or /clear starts a fresh session."""
     name = 'muse'
     detect = staticmethod(muse_prompt_blank)
 
 
 def tui_for(agent, target, **kw):
-    """TUI wrapper for a detected agent name, or None if unsupported."""
+    """Return the TUI wrapper for a detected agent name, or None if it is unsupported."""
     a = (agent or '').lower()
     if 'codex' in a:
         return CodexTui(target, **kw)
@@ -288,7 +291,7 @@ def tui_for(agent, target, **kw):
 # agent detection
 
 def match_agent(rules, command, args, title):
-    """local-status.mts#matchAgent: first rule whose constraints all hold."""
+    """Return the first rule whose constraints all hold (local-status.mts#matchAgent)."""
     cmd_base = command.split('/')[-1] if command else command
     for rule in rules:
         m = rule.get('match', {})
@@ -327,8 +330,9 @@ def child_pids(pid):
 
 
 def detect_agent(target, rules=None, cdir=None):
-    """tell-worker.mts#detectAgent: look at every process on the first pane's
-    tty and apply the known-agents rules.  target may be 'sess:win' or a pane."""
+    """Detect the agent in a window (tell-worker.mts#detectAgent). This applies the
+    known-agents rules to every process on the first pane's tty. target may be
+    'sess:win' or a pane."""
     rules = rules if rules is not None else load_known_agents(cdir)
     # list-panes on a window or pane target lists that window's panes; the
     # first row is the main pane, which is what scialect inspects.
@@ -353,8 +357,8 @@ def detect_agent(target, rules=None, cdir=None):
 
 
 def find_agent_in_window(session, window, rules=None, cdir=None):
-    """local-status.mts#findAgentInWindow: check each pane's own process and
-    its children. Returns (agent or None, live cwd or None)."""
+    """Check each pane's own process and its children (local-status.mts#findAgentInWindow).
+    Returns (agent or None, live cwd or None)."""
     rules = rules if rules is not None else load_known_agents(cdir)
     rows = _pane_rows(f"{session}:{window}",
                       ['#{pane_index}', '#{pane_pid}', '#{pane_current_command}',
@@ -389,8 +393,8 @@ class NotAnAgentPane(AgentNotReady):
 
 
 def foreground_processes(tty):
-    """[(pid, stat, comm, args)] for every process on a tty (comm from /proc, untruncated
-    by spaces in args)."""
+    """Return [(pid, stat, comm, args)] for every process on a tty. comm comes from /proc,
+    so spaces in args cannot cut it short."""
     rows = []
     for line in _run(['ps', '-t', tty, '-o', 'pid=,stat=,args=']).splitlines():
         parts = line.split(None, 2)
@@ -408,8 +412,8 @@ def foreground_processes(tty):
 
 
 def resolve_pane(target):
-    """The exact pane a tmux target means (what send-keys would hit):
-    {'pane_id', 'tty', 'dead', 'session', 'window_index', 'pane_index'}."""
+    """Return the exact pane a tmux target means, which is the pane send-keys would hit.
+    The dict has 'pane_id', 'tty', 'dead', 'session', 'window_index' and 'pane_index'."""
     sep = '\t'
     fmt = sep.join(['#{pane_id}', '#{pane_tty}', '#{pane_dead}', '#{session_name}',
                     '#{window_index}', '#{pane_index}'])
@@ -421,8 +425,8 @@ def resolve_pane(target):
 
 
 def pane_agent(target, procs=None):
-    """Registered agent in the foreground of the exact pane `target` resolves to.
-    Returns the resolve_pane() dict plus 'agent' (None if none) and 'agent_pid'."""
+    """Find the registered agent in the foreground of the exact pane `target` resolves to.
+    Returns the resolve_pane() dict plus 'agent' (None if there is none) and 'agent_pid'."""
     try:
         info = resolve_pane(target)
     except tmux.TmuxError as e:
@@ -435,7 +439,7 @@ def pane_agent(target, procs=None):
 
 
 def require_agent_pane(target, procs=None):
-    """pane_agent(), but raise NotAnAgentPane unless a registered agent is in the
+    """Like pane_agent(), but raise NotAnAgentPane unless a registered agent is in the
     foreground. Typing tools send to the returned pane_id, not the raw target."""
     info = pane_agent(target, procs=procs)
     if not info['agent']:
@@ -450,7 +454,7 @@ def require_agent_pane(target, procs=None):
 
 
 def agent_status(target, cdir=None):
-    """Registered agent in the foreground of the exact pane, prompt state and pane info."""
+    """Return the registered agent in the foreground of the exact pane, its prompt state and the pane info."""
     info = pane_agent(target)
     agent = info['agent']
     raw = tmux.capture_pane(info['pane_id'], escapes=True)
@@ -473,9 +477,9 @@ def agent_status(target, cdir=None):
 
 
 def pane_ready(target, probe=False, agent=None, cdir=None):
-    """Is the agent's prompt empty?  With probe=True use the space probe
-    (sends a space and a backspace) to see past placeholder text; probing only
-    ever types into a pane running a registered agent."""
+    """Return True if the agent's prompt is empty. With probe=True, use the space probe
+    (a space, then a backspace) to see past placeholder text. The probe only types
+    into a pane that runs a registered agent."""
     if probe:
         info = require_agent_pane(target)
     else:
@@ -492,11 +496,11 @@ def pane_ready(target, probe=False, agent=None, cdir=None):
 
 def tell_agent(target, text, new_conversation=False, require_empty_prompt=True,
                agent=None, cdir=None):
-    """tell-worker's send sequence for an arbitrary pane.
+    """Run tell-worker's send sequence on any pane.
 
-    1. (optional) reach an empty prompt via the space probe; refuse otherwise
-    2. (optional) '/new', 500ms, Enter, wait 10s
-    3. type text literally, 500ms, Enter
+    1. Optionally reach an empty prompt with the space probe, and refuse if that fails.
+    2. Optionally send '/new', wait 500ms, press Enter and wait 10s.
+    3. Type the text literally, wait 500ms and press Enter.
     """
     info = require_agent_pane(target)          # never type into a shell
     agent = (agent or info['agent']).lower()
@@ -518,8 +522,8 @@ def tell_agent(target, text, new_conversation=False, require_empty_prompt=True,
 
 def wait_for_idle(target, timeout=120.0, poll=1.0, settle=3.0, agent=None, cdir=None,
                   sleep=time.sleep, capture=None, clock=time.monotonic):
-    """Block until the agent looks idle: the screen is unchanged for `settle`
-    seconds and (when the agent has a detector) its prompt is blank."""
+    """Block until the agent looks idle. The screen must stay unchanged for `settle`
+    seconds and, when the agent has a detector, its prompt must be blank."""
     if capture is None:
         info = pane_agent(target)
         agent = agent or info['agent']

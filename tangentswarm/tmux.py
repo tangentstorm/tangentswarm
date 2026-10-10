@@ -1,9 +1,8 @@
-"""Thin wrappers around the tmux command line.
+"""Small wrappers around the tmux command line.
 
-Every call passes an argv list to subprocess (never a shell string).
-The structured helpers (list_sessions, list_panes, capture_pane,
-send_keys_literal, new_session, new_window) are what the MCP server uses;
-the older helpers are kept for the swarm CLI.
+Every call passes an argv list to subprocess, never a shell string. The MCP server
+uses the structured helpers (list_sessions, list_panes, capture_pane,
+send_keys_literal, new_session, new_window). The swarm CLI uses the older helpers.
 """
 import subprocess
 import time
@@ -60,7 +59,7 @@ PANE_FIELDS = [
     ('height', 'pane_height', int),
     ('pid', 'pane_pid', int),
     ('dead', 'pane_dead', bool),
-    # keep the path last: parse_format_output lets the last field absorb
+    # Keep the path last. parse_format_output lets the last field take up
     # any stray separators.
     ('current_path', 'pane_current_path', str),
 ]
@@ -85,7 +84,7 @@ def _convert(value, typ):
 def parse_format_output(text, fields):
     """Parse tmux output produced with build_format(fields) into dicts.
 
-    Values are split on SEP; the last field absorbs any extra separators so
+    Values are split on SEP. The last field takes up any extra separators, so
     a stray tab in a path cannot shift the other columns.
     """
     rows = []
@@ -129,9 +128,9 @@ def list_sessions():
 def list_panes(target=None, all=False):
     """Return a list of pane dicts.
 
-    target: a session or window target (e.g. 'agents' or 'agents:1').
-            With a session target, all panes in all its windows are listed.
-    all:    list every pane on the server (target is ignored).
+    target is a session or window target, such as 'agents' or 'agents:1'. A
+    session target lists all panes in all its windows.
+    all=True lists every pane on the server and ignores target.
     """
     argv = [TMUX, 'list-panes']
     if all:
@@ -187,8 +186,8 @@ def run_checked(argv):
 
 
 def display(target, fmt):
-    """Expand a -F format for the pane `target` resolves to (the same pane send-keys would
-    use). Raises TmuxError if the target does not exist."""
+    """Expand a -F format for the pane `target` resolves to, which is the pane send-keys would
+    use. Raises TmuxError if the target does not exist."""
     return _run([TMUX, 'display-message', '-p', '-t', target, fmt], check=True).stdout.rstrip('\n')
 
 
@@ -200,8 +199,8 @@ def _created_info(result):
 def new_session(name, cwd=None, command=None):
     """Create a detached session. Returns the new pane's info dict.
 
-    command is passed to tmux as a single shell-command argument (tmux runs
-    it with the default shell); omit it to start the default shell.
+    tmux gets command as a single shell-command argument and runs it with the
+    default shell. Leave it out to start the default shell.
     Raises TmuxError on failure.
     """
     argv = [TMUX, 'new-session', '-d', '-P', '-F', PANE_FORMAT, '-s', name]
@@ -213,8 +212,8 @@ def new_session(name, cwd=None, command=None):
 
 
 def new_window(session, name=None, cwd=None, command=None):
-    """Create a window in session (at the next free index, without switching
-    to it). Returns the new pane's info dict. Raises TmuxError on failure."""
+    """Create a window in session at the next free index, without switching to it.
+    Returns the new pane's info dict. Raises TmuxError on failure."""
     argv = [TMUX, 'new-window', '-d', '-P', '-F', PANE_FORMAT, '-t', f'{session}:']
     if name:
         argv += ['-n', name]
@@ -242,8 +241,8 @@ def rename_window(target, name):
 
 
 def send_keys(target, keys, enter=True):
-    """Send keys to a tmux pane (key names like C-c are interpreted).
-    If enter=True, adds an 'Enter' key press at the end."""
+    """Send keys to a tmux pane. tmux interprets key names such as C-c.
+    With enter=True, press Enter at the end."""
     cmd = [TMUX, 'send-keys', '-t', target, keys]
     if enter:
         cmd.append('Enter')
@@ -271,7 +270,7 @@ def next_window(session_name):
 
 def split_window(target, split_type, directory, shell=DEFAULT_SHELL):
     """Split a tmux window.
-    split_type: '-h' for horizontal split, '-v' for vertical split."""
+    split_type is '-h' for a horizontal split or '-v' for a vertical split."""
     return subprocess.run([
         TMUX, 'split-window', split_type, '-t', target,
         '-c', directory, shell
@@ -284,7 +283,7 @@ def select_pane(target):
 
 
 def kill_pane(target):
-    """Kill a tmux pane. (CLI use only; deliberately not exposed over MCP.)"""
+    """Kill a tmux pane. The CLI uses this, and MCP does not expose it."""
     return subprocess.run([TMUX, 'kill-pane', '-t', target], check=False)
 
 
@@ -299,11 +298,11 @@ def attach_session(session_name, unicode=True):
     if unicode:
         cmd.append('-u')
     cmd.extend(['attach-session', '-t', session_name])
-    return cmd  # Return command list for os.execvp()
+    return cmd  # return the argv for os.execvp()
 
 
 def new_window_args(*args):
-    """Create a window with raw tmux new-window arguments (CLI helper).
+    """Create a window from raw tmux new-window arguments, for the CLI.
     Returns the CompletedProcess."""
     cmd = [TMUX, 'new-window']
     cmd.extend(args)
@@ -311,7 +310,7 @@ def new_window_args(*args):
 
 
 def kill_session(*args):
-    """Kill a tmux session. (CLI use only; deliberately not exposed over MCP.)"""
+    """Kill a tmux session. The CLI uses this, and MCP does not expose it."""
     cmd = [TMUX, 'kill-session']
     cmd.extend(args)
     return subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)

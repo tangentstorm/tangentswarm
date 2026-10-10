@@ -86,7 +86,7 @@ async def _with_server(h, fn):
 
 
 def test_protocol_smoke(fake_hub):
-    """Port of scialect src/smoke.mts: hello, ping, list, use, use-missing."""
+    """Port of scialect src/smoke.mts. Checks hello, ping, list, use and use-missing."""
     fs, h = fake_hub
     events = []
 

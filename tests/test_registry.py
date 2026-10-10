@@ -59,7 +59,7 @@ def call_tool(name, **kw):
 
 
 # ---------------------------------------------------------------------------
-# start_agent: allowlist, no free commands, cwd confinement
+# start_agent allowlist, no free commands, cwd confinement
 
 def test_launch_argv_is_fixed(fake_bins):
     assert registry.launch_argv('muse') == [fake_bins['muse'], '--trust-workspace']
@@ -77,7 +77,7 @@ def test_arbitrary_command_rejected_by_the_tool(fake_bins, root, monkeypatch):
     rec = Recorder()
     monkeypatch.setattr(tmux, 'run_checked', rec)
     monkeypatch.setattr(tmux, 'has_session', lambda s: True)
-    # agent is an enum: anything else is refused before tmux is touched
+    # agent is an enum, so anything else is refused before tmux runs
     with pytest.raises(Exception):
         call_tool('start_agent', agent='bash', cwd='proj')
     with pytest.raises(Exception):
@@ -85,7 +85,7 @@ def test_arbitrary_command_rejected_by_the_tool(fake_bins, root, monkeypatch):
     with pytest.raises(Exception):
         call_tool('new_session', name='x', command='bash')
     assert rec.calls == []
-    # there is no command parameter: a smuggled one is ignored, the fixed argv still runs
+    # there is no command parameter, so an extra one is ignored and the fixed argv still runs
     call_tool('start_agent', agent='claude', cwd='proj', command='bash -c id')
     argv = rec.calls[0]
     assert argv[argv.index('--') + 1:] == ['/usr/bin/env', '--', fake_bins['claude']]
@@ -221,15 +221,15 @@ def test_tell_agent_and_probe_refuse_bash(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Muse adapter (fixture captured from the live maclennan-muse pane)
+# Muse adapter (fixture captured from a live Muse pane)
 
 def test_muse_placeholder_reads_as_blank():
     raw = (FIX / 'muse_idle.ansi').read_text()
     plain = agents.strip_ansi(raw)
     assert '❯ Ask to monitor' in plain
     assert agents.is_muse_screen(plain)
-    assert not agents.muse_prompt_blank(plain)                 # placeholder looks like input...
-    assert agents.muse_prompt_blank(agents.input_view(raw))    # ...until its grey is masked
+    assert not agents.muse_prompt_blank(plain)                 # the placeholder looks like input
+    assert agents.muse_prompt_blank(agents.input_view(raw))    # until input_view() blanks the grey text
 
 
 def test_muse_typed_text_is_not_blank():

@@ -4,11 +4,11 @@
     swarm -c tell-worker <worker> rebase [branch]
     swarm -c tell-worker <manager> review|approve-task|unblock <worker>
 
-Every handoff is atomic, as in scialect: reach an empty prompt and deliver
-the message FIRST, and only then write the new .sci/status-line and
-propagate the committed prompt guides (rules/<guide> plus its `uses:`
-closure, read with `git show HEAD:rules/...` in the control dir).  If the
-prompt never empties, nothing is changed and the command is safe to retry.
+Every handoff is atomic, as in scialect. It first reaches an empty prompt and
+delivers the message. Only then does it write the new .sci/status-line and copy the
+committed prompt guides (rules/<guide> plus its `uses:` closure, read with
+`git show HEAD:rules/...` in the control dir). If the prompt never empties, the
+command changes nothing and is safe to retry.
 """
 import os
 import subprocess
@@ -139,7 +139,7 @@ class TellWorker:
 
     # -- handoffs ------------------------------------------------------------
     def send_then_commit(self, w, target, message, commit, guide=None):
-        """sendHandoffThenCommit."""
+        """Deliver the handoff message, then write the new state (scialect's sendHandoffThenCommit)."""
         agent, tui = self._tui(w, target, 'claude')
         if tui is None:
             self.log(f"{w.id}: no special TUI handling for agent '{agent}' yet.")
@@ -182,8 +182,8 @@ class TellWorker:
                'Then, follow the instructions in .sci/proving-guide.md to acknowledge the assignment and begin work.'
                + notice)
         if agent == 'claude' or 'codex' in agent:
-            tui.new_conversation()      # /new, 500ms, Enter, 10s
-        tui.send_text(msg)              # text, 500ms, Enter
+            tui.new_conversation()      # send /new, wait 500ms, press Enter, wait 10s
+        tui.send_text(msg)              # type the text, wait 500ms, press Enter
         self.finalize_assigned(w)
         self.log(f"{w.id}: handoff sent to {agent}.")
 
