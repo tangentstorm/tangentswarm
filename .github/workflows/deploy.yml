@@ -3,7 +3,7 @@ name: Deploy swarm-tmux
 # Redeploys the swarm-tmux MCP server on the deploy host on every push to main
 # (or a manual run). The SSH key is forced to run /usr/local/sbin/swarm-tmux-deploy as the service user;
 # the only thing sent is the commit SHA, which the server script only logs.
-# See contrib/deploy/README.md.
+# The server-side deploy script and key restriction are host config kept outside this repo.
 
 on:
   push:
