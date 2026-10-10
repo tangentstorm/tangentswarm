@@ -80,6 +80,10 @@ def print_usage():
     print("       swarm -c for-all '<cmd>'              run a command in every worker dir")
     print("       swarm -c agent-status <tmux-target>   detected agent + prompt state")
     print("       swarm -c tell-agent <tmux-target> <text...>")
+    print("Agents in worktrees (same code as the swarm-mcp tools; see tangentswarm/worktrees.py):")
+    print("       swarm -c start-agent <agent> <repo> <branch> [--session S] [--window NAME]")
+    print("       swarm -c worktrees [<repo>] [--json]")
+    print("       swarm -c remove-worktree <repo> <branch> [--delete-branch]")
     print("Cloud sessions and MCP auth:")
     print("       swarm cloud <login|list|status|open|wait|serve|orchestrator|client|sessions>")
     print("       swarm auth <set-password|approve|client|token|show-config>")
@@ -133,6 +137,9 @@ def run_subcommand(name, argv):
         return _agent_status(argv)
     if name == 'tell-agent':
         return _tell_agent(argv)
+    if name in ('start-agent', 'worktrees', 'remove-worktree'):
+        from . import worktrees
+        return worktrees.cli(name, argv)
     raise KeyError(name)
 
 
@@ -140,7 +147,7 @@ def run_subcommand(name, argv):
 # lives behind `-c`, so `swarm [<repo>] <branch>` keeps its meaning.
 BARE_SUBCOMMANDS = ('cloud', 'auth')
 DASH_C_SUBCOMMANDS = ('local-status', 'tell-worker', 'for-all', 'step', 'agent-status',
-                      'tell-agent', 'cloud', 'auth')
+                      'tell-agent', 'start-agent', 'worktrees', 'remove-worktree', 'cloud', 'auth')
 
 def get_args():
     """Parse command line arguments and return command, repo_name, repo_url, and branch_name."""
@@ -686,7 +693,7 @@ def show_branch_status():
 
         if 'branches' in repo_config:
             for branch_name in repo_config['branches'].keys():
-                branch_dir = os.path.join(root_dir, f"{repo_name}.{branch_name}")
+                branch_dir = os.path.join(root_dir, f"{repo_name}.{branch_name.replace('/', '-')}")
 
                 if os.path.exists(branch_dir):
                     repo_has_active_branch = True
@@ -959,36 +966,33 @@ def main():
 
         root_dir = get_swarm_root(config)
 
-        branch_dir = os.path.join(root_dir, f"{repo_name}.{branch_name}")
+        # <root>/<repo> is the plain checkout on the default branch, and each branch gets a
+        # sibling worktree <root>/<repo>.<branch with '/' -> '-'>, the same layout and code
+        # as `swarm -c start-agent` and the swarm-mcp start_agent tool.
+        from . import worktrees
+        try:
+            branch_dir = worktrees.worktree_path(root_dir, repo_name, branch_name)
+        except worktrees.WorktreeError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
         branch_dir_path = Path(branch_dir).resolve()
 
-        # Create directory if it doesn't exist
+        # Create the worktree if it doesn't exist
         is_new_repo = False
         if not os.path.exists(branch_dir):
             is_new_repo = True
-            os.makedirs(branch_dir)
-
-            print(f"Cloning repository {repo_url} into {branch_dir}")
-            git.clone(repo_url, branch_dir)
-
-            # Get the default branch that was checked out by the clone
-            default_branch = git.branch_show_current(cwd=branch_dir).stdout.strip()
-            print(f"Repository's default branch is: {default_branch}")
-
-            # If default branch doesn't match requested branch, checkout the requested branch
-            if default_branch != branch_name:
-                print(f"Switching from default branch '{default_branch}' to requested branch '{branch_name}'")
-                if not checkout_branch(branch_dir, branch_name):
-                    response = input("Branch checkout failed. Continue with default branch? [y/N]: ")
-                    if response.lower() != 'y':
-                        print("Operation cancelled")
-                        sys.exit(1)
-            else:
-                print(f"Default branch already matches requested branch: {branch_name}")
-                # Ensure tracking is properly set up
-                setup_tracking(branch_dir, branch_name)
-
-            pull_branch(branch_dir, branch_name)
+            plain_dir = os.path.join(root_dir, repo_name)
+            if not os.path.exists(plain_dir):
+                print(f"Cloning repository {repo_url} into {plain_dir} (the plain checkout)")
+                git.clone(repo_url, plain_dir)
+            print(f"Creating worktree {branch_dir} for {branch_name}")
+            try:
+                wt = worktrees.ensure_worktree(plain_dir, branch_name, top=root_dir)
+            except worktrees.WorktreeError as e:
+                print(f"Error: {e}")
+                sys.exit(1)
+            print(f"Worktree ready ({wt['source']} branch, base {wt['default_branch']} "
+                  f"{wt['base'][:10]})")
         else:
             # For existing repositories, check if current branch matches requested branch
             print(f"Using existing repository at {branch_dir}")

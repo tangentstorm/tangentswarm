@@ -18,8 +18,8 @@ apikey mode grants every scope.
 
 There is no tool that runs an arbitrary command (shell_exec is gone), and there are no
 kill-pane, kill-window or kill-session tools. start_agent only launches the fixed agents
-in tangentswarm/registry.py, with no caller-supplied command or arguments, in a
-directory under the agent root. Every typing tool refuses a pane whose foreground
+in tangentswarm/registry.py, with no caller-supplied command or arguments, in its own
+git worktree beside a repo under the agent root (tangentswarm/worktrees.py). Every typing tool refuses a pane whose foreground
 process is not one of those agents, such as a bash prompt.
 Only MCP protocol traffic goes to stdout. Logs go to stderr.
 """
@@ -32,14 +32,15 @@ import sys
 
 import anyio
 
-from . import __version__, agents, registry, tmux
+from . import __version__, agents, registry, tmux, worktrees
 from .auth import SCOPE_READ, SCOPE_SHELL
 
 from mcp.server.mcpserver import MCPServer as _Server   # mcp 2.x (FastMCP was renamed)
 
 INSTRUCTIONS = """Drive coding agents in tmux on this host. Read with list_sessions/list_panes/
 capture_pane, check agents with agent_status/pane_ready/wait_for_idle, start one with
-start_agent (see list_agents), and talk to it with tell_agent or send_keys (literal text,
+start_agent (see list_agents; every agent gets its own git worktree, see list_worktrees
+and remove_worktree), and talk to it with tell_agent or send_keys (literal text,
 then Enter after a 0.5s pause). Typing is only allowed into panes whose foreground process
 is a registered agent (claude, muse, grok, gemini, codex) -- never into a shell.
 Targets use tmux syntax: session, session:window, session:window.pane or %pane_id.
@@ -180,23 +181,49 @@ def list_agents() -> dict:
     """List the agents start_agent can launch, with name, installed, binary path, exact argv
     and adapter level. Adapter "full" means prompt detection is verified. "basic" means the
     detector is ported but unverified here. "none" means start and type only, so tell_agent
-    needs require_empty_prompt=false. Also returns the project root that start_agent's cwd
-    must be under."""
+    needs require_empty_prompt=false. Also returns the agent root that start_agent's repo
+    must be directly under."""
     return {'agents': registry.registry_info(), 'cwd_root': registry.agent_root()}
 
 
 @_scoped(SCOPE_SHELL)
-def start_agent(agent: registry.AgentName, cwd: str, session: str = 'agents',
-                window_name: str | None = None) -> dict:
-    """Start a registered coding agent (no other command can be run) in a new window of
-    `session` (created if missing), without switching clients. cwd is a project directory
-    under the agent root (~/ver by default), either absolute or relative to it, and symlinks
-    may not lead outside it. window_name is kebab-case, default '<agent>-<dir>'. The agent is the window's
-    own process, so the window closes when the agent exits. Returns the new pane."""
+async def start_agent(agent: registry.AgentName, repo: str, branch: str, session: str = 'agents',
+                      window_name: str | None = None) -> dict:
+    """Start a registered coding agent (no other command can be run) in its own git worktree,
+    in a new window of `session` (created if missing), without switching clients. repo is a
+    plain checkout directly under the agent root (~/ver by default), such as 'platform'. It
+    must be on its default branch and clean: it is fetched and fast-forwarded to
+    origin/<default>, and the call refuses if it is dirty or has diverged. The agent runs in
+    <root>/<repo>.<branch with '/' -> '-'>, created from the local branch, else
+    origin/<branch>, else as a new branch cut from the default branch. The repo's
+    .swarm.yaml can list paths to symlink or copy into the worktree. Retrying is safe: an
+    existing worktree is reused, and a live agent of the same kind already in it is returned
+    (reused=true) instead of starting another. window_name is kebab-case, default
+    '<agent>-<branch>'. The window closes when the agent exits."""
     try:
-        return registry.start_agent(agent, cwd, session=session, window_name=window_name)
+        return await anyio.to_thread.run_sync(
+            lambda: worktrees.spawn_agent(agent, repo, branch, session=session,
+                                          window_name=window_name))
     except tmux.TmuxError as e:
         raise _err(e)
+
+
+@_scoped(SCOPE_READ)
+async def list_worktrees(repo: str | None = None) -> dict:
+    """List the git repos directly under the agent root (or just `repo`) and their worktrees:
+    path, branch, head, dirty, whether it follows the <repo>.<branch slug> layout, and the
+    tmux panes working in it. Does not fetch."""
+    return await anyio.to_thread.run_sync(lambda: worktrees.list_worktrees(repo))
+
+
+@_scoped(SCOPE_SHELL)
+async def remove_worktree(repo: str, branch: str, delete_branch: bool = False) -> dict:
+    """Remove the worktree that has `branch` checked out. Refuses if any tmux pane or process
+    is working in it, or if it has uncommitted or untracked changes (there is no force
+    option). The plain checkout is never removed. delete_branch=true also deletes the branch,
+    but only if it is merged into origin/<default>; otherwise it is kept and reported."""
+    return await anyio.to_thread.run_sync(
+        lambda: worktrees.remove_worktree(repo, branch, delete_branch=delete_branch))
 
 
 @_scoped(SCOPE_READ)
@@ -330,6 +357,7 @@ async def cloud_wait_for_response(session_id: str, text: str | None = None, time
 
 
 TOOLS = [list_sessions, list_panes, capture_pane, send_keys, list_agents, start_agent,
+         list_worktrees, remove_worktree,
          agent_status, pane_ready, wait_for_idle, tell_agent, swarm_status, tell_worker,
          cloud_list_sessions, cloud_send_message, cloud_get_latest_response, cloud_wait_for_response]
 
