@@ -140,7 +140,7 @@ def test_bad_token_is_401():
 
 def test_preissued_token_and_scope_enforcement(tmp_path):
     store = A.AuthStore()
-    full, _, _ = store.issue_token('memnar', A.ALL_SCOPES, 3600)
+    full, _, _ = store.issue_token('client-a', A.ALL_SCOPES, 3600)
     ro, _, _ = store.issue_token('viewer', [A.SCOPE_READ], 3600)
     shell_only, _, _ = store.issue_token('odd', [A.SCOPE_SHELL], 3600)
     expired, _, _ = store.issue_token('old', A.ALL_SCOPES, 3600)
@@ -172,7 +172,7 @@ def test_preissued_token_and_scope_enforcement(tmp_path):
 
 def test_client_credentials_grant():
     store = A.AuthStore()
-    cid, secret = A.create_confidential_client(store, 'memnar', [A.SCOPE_READ])
+    cid, secret = A.create_confidential_client(store, 'client-a', [A.SCOPE_READ])
     with Server() as srv:
         basic = base64.b64encode(f'{cid}:{secret}'.encode()).decode()
         st, _, body = http('POST', srv.base + '/token', form={'grant_type': 'client_credentials'},
@@ -197,7 +197,7 @@ def test_authorization_code_pkce_with_dcr_and_approval_code():
         st, _, body = http('POST', srv.base + '/register', body={
             'redirect_uris': [redirect], 'token_endpoint_auth_method': 'none',
             'grant_types': ['authorization_code', 'refresh_token'], 'response_types': ['code'],
-            'client_name': 'skeletor'})
+            'client_name': 'client-b'})
         assert st == 201, body
         client = json.loads(body)
         verifier = secrets.token_urlsafe(48)
@@ -258,8 +258,8 @@ def jwks_env(tmp_path, monkeypatch):
 
 def make_jwt(key, aud, scope, exp_delta=600, iss=ISSUER):
     now = int(time.time())
-    return jwt.encode({'iss': iss, 'sub': 'memnar', 'aud': aud, 'scope': scope, 'iat': now,
-                       'exp': now + exp_delta, 'client_id': 'memnar'}, key, algorithm='RS256',
+    return jwt.encode({'iss': iss, 'sub': 'client-a', 'aud': aud, 'scope': scope, 'iat': now,
+                       'exp': now + exp_delta, 'client_id': 'client-a'}, key, algorithm='RS256',
                       headers={'kid': 'k1'})
 
 
@@ -287,7 +287,7 @@ def test_external_jwt_validation(jwks_env):
 
 
 def test_external_mode_accepts_local_preissued_tokens(jwks_env):
-    tok, _, _ = A.AuthStore().issue_token('memnar', A.ALL_SCOPES, 3600)
+    tok, _, _ = A.AuthStore().issue_token('client-a', A.ALL_SCOPES, 3600)
     with Server() as srv:
         assert Mcp(srv, tok).initialize()[0] == 200
 
@@ -302,9 +302,9 @@ def test_introspection_fallback(monkeypatch):
     def fake_introspect(token):
         seen['token'] = token
         return {'active': token == 'opaque-good', 'iss': ISSUER, 'aud': cfg.audience,
-                'scope': A.SCOPE_READ, 'exp': time.time() + 60, 'client_id': 'memnar'}
+                'scope': A.SCOPE_READ, 'exp': time.time() + 60, 'client_id': 'client-a'}
     v = A.ExternalTokenVerifier(cfg, store=None, jwks={'keys': []})
     monkeypatch.setattr(v, 'introspect', lambda t: fake_introspect(t) if fake_introspect(t)['active'] else None)
     at = v.verify_sync('opaque-good')
-    assert at and at.client_id == 'memnar' and at.scopes == [A.SCOPE_READ]
+    assert at and at.client_id == 'client-a' and at.scopes == [A.SCOPE_READ]
     assert v.verify_sync('opaque-bad') is None

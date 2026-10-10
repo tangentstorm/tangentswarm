@@ -35,20 +35,17 @@ This installs two commands:
   the agent tools ported from scialect (see [Agents and the swarm state machine](#agents-and-the-swarm-state-machine)).
 - `swarm-mcp` -- an MCP server for tmux, agents and cloud sessions (see [MCP server](#mcp-server)).
 
-`python swarm.py ...` from a checkout still works (it is now a thin shim around
-`tangentswarm.cli`).
-
 ## Usage
 
 ```bash
 # Simple usage with default repository
-./swarm.py <branch-name>
+swarm <branch-name>
 
 # Specify repository and branch
-./swarm.py <repo-name> <branch-name>
+swarm <repo-name> <branch-name>
 
 # View status of all branches
-./swarm.py -c status
+swarm -c status
 ```
 
 ## Configuration
@@ -213,7 +210,7 @@ By default, if no layout prefixes are specified, TangentSwarm will create a new 
 TangentSwarm includes a status command that helps you keep track of your branches and their current states:
 
 ```bash
-./swarm.py -c status
+swarm -c status
 ```
 
 This command functions as an interactive session manager:
@@ -233,7 +230,7 @@ You can create a `.swarm-status` file in the root of your branch directory with 
 Working on feature X
 ```
 
-This status message will be displayed when you run `swarm.py -c status`, allowing you to keep notes about what you're working on in each branch.
+This status message will be displayed when you run `swarm -c status`, allowing you to keep notes about what you're working on in each branch.
 
 ## Tips
 
@@ -247,9 +244,9 @@ This status message will be displayed when you run `swarm.py -c status`, allowin
 - Add `bind s choose-tree -s -O name` to your `~/.tmux.conf` to sort sessions alphabetically when you press `<prefix> s`. Since TangentSwarm uses `port/name` format, this effectively sorts sessions by port number
 - Replace the default tmux session chooser with swarm's status command by adding this to your `~/.tmux.conf`:
   ```
-  bind-key s run-shell "tmux split-window -p 70 'python /path/to/swarm.py -c status'"
+  bind-key s run-shell "tmux split-window -p 70 'swarm -c status'"
   ```
-  (Replace `/path/to/swarm.py` with the absolute path to your swarm.py file. Since the config is in `~/.swarm.yaml`, you can run this from any directory.)
+  (Use the full path to the installed `swarm` command if tmux can't find it. Since the config is in `~/.swarm.yaml`, you can run this from any directory.)
 - If you want certain sessions to appear at the top of the sorted list, you can rename them with `<prefix> : rename-session *important-session`. The asterisk (`*`) character sorts before numbers, causing these sessions to appear first in the list. Note that most other characters that would sort before digits are invalid in tmux session names
 
 
@@ -265,7 +262,7 @@ This status message will be displayed when you run `swarm.py -c status`, allowin
 
 ```
 tangentswarm/
-  cli.py           swarm CLI (the original swarm.py) + subcommand dispatch
+  cli.py           swarm CLI + subcommand dispatch
   tmux.py          tmux wrappers (argv lists only; structured list_sessions/list_panes)
   git.py           git helpers
   mcp_server.py    swarm-mcp (stdio, or Streamable HTTP with OAuth or an API key)
@@ -411,7 +408,7 @@ Give the server its own SSH key with a forced command in the target user's
 `~/.ssh/authorized_keys`:
 
 ```
-command="/home/memnar/.venvs/tangentswarm/bin/swarm-mcp",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA... skeletor-swarm-mcp
+command="/home/swarm/.venvs/tangentswarm/bin/swarm-mcp",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA... swarm-mcp-client
 ```
 
 and point the MCP client at ssh:
@@ -421,8 +418,8 @@ and point the MCP client at ssh:
   "mcpServers": {
     "tangentswarm": {
       "command": "ssh",
-      "args": ["-i", "~/.ssh/tangentcode_memnar_swarm_mcp", "-o", "IdentitiesOnly=yes", "-T",
-               "memnar@tangentcode.com", "swarm-mcp"]
+      "args": ["-i", "~/.ssh/swarm_mcp", "-o", "IdentitiesOnly=yes", "-T",
+               "swarm@host.example", "swarm-mcp"]
     }
   }
 }
@@ -489,24 +486,24 @@ Nothing secret is committed or generated into the repo: tokens, client secrets a
 approval codes are stored only as SHA-256 hashes, the admin password as scrypt, all in
 0600 files under `~/.local/state/tangentswarm`.
 
-#### Connecting a headless client (e.g. Memnar)
+#### Connecting a headless client (e.g. a script)
 
 The HTTP endpoint is meant to sit behind loopback (or a TLS reverse proxy later). From
 another machine, tunnel first: `ssh -N -L 8765:127.0.0.1:8765 user@host`.
 
-*(a) pre-issued token* -- on the server: `swarm auth token issue --client memnar --scopes
+*(a) pre-issued token* -- on the server: `swarm auth token issue --client my-client --scopes
 tangentswarm:read tangentswarm:shell --ttl 30d`; then
 
 ```sh
 TOKEN=tsw_...    # shown once
 curl -sS http://127.0.0.1:8765/mcp -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"memnar","version":"1"}}}' -D -
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"my-client","version":"1"}}}' -D -
 # reuse the Mcp-Session-Id response header on later requests, send notifications/initialized,
 # then tools/list and tools/call
 ```
 
-*(b) client_credentials* -- on the server: `swarm auth client add --name memnar --scopes
+*(b) client_credentials* -- on the server: `swarm auth client add --name my-client --scopes
 tangentswarm:read tangentswarm:shell` (prints client_id and secret once); then
 
 ```sh

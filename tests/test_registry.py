@@ -221,7 +221,7 @@ def test_tell_agent_and_probe_refuse_bash(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Muse adapter (fixture captured from the live maclennan-muse pane)
+# Muse adapter (fixture captured from a live Muse pane)
 
 def test_muse_placeholder_reads_as_blank():
     raw = (FIX / 'muse_idle.ansi').read_text()

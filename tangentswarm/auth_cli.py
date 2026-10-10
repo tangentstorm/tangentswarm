@@ -66,7 +66,7 @@ def main(argv):
     p.add_argument('client_id')
     pt = sub.add_parser('token').add_subparsers(dest='sub', required=True)
     p = pt.add_parser('issue')
-    p.add_argument('--client', required=True, help='label / client id the token is for (e.g. memnar)')
+    p.add_argument('--client', required=True, help='label / client id the token is for (e.g. my-client)')
     p.add_argument('--scopes', nargs='*')
     p.add_argument('--ttl', type=parse_ttl, default=parse_ttl('30d'), help='e.g. 12h, 30d, never (default 30d)')
     p.add_argument('--label')

@@ -14,7 +14,7 @@ def test_parse_sessions():
 
 def test_parse_panes_types_and_tab_in_path():
     line = "\t".join(['agents', '2', 'pr6-s3sync', '0', '%5', '1', '0', 'claude',
-                      '120', '40', '4242', '0', '/home/memnar/odd\tdir'])
+                      '120', '40', '4242', '0', '/home/user/odd\tdir'])
     (row,) = tmux.parse_format_output(line + "\n\n", tmux.PANE_FIELDS)
     assert row['session'] == 'agents'
     assert row['window_index'] == 2 and row['window_name'] == 'pr6-s3sync'
@@ -22,7 +22,7 @@ def test_parse_panes_types_and_tab_in_path():
     assert row['active'] is True and row['window_active'] is False
     assert row['current_command'] == 'claude'
     assert (row['width'], row['height']) == (120, 40)
-    assert row['current_path'] == '/home/memnar/odd\tdir'
+    assert row['current_path'] == '/home/user/odd\tdir'
 
 
 def test_format_strings_use_tmux_vars():

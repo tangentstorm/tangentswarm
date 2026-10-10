@@ -70,8 +70,8 @@ def save_config(config):
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 def print_usage():
-    print("Usage: swarm.py [<repo_name>] <branch_name>")
-    print("       swarm.py -c status")
+    print("Usage: swarm [<repo_name>] <branch_name>")
+    print("       swarm -c status")
     print("")
     print("Agent / swarm tools (run in a control dir holding workers.jsonl, as in scialect):")
     print("       swarm -c local-status                 worker status table")
