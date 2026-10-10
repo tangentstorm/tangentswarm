@@ -189,8 +189,9 @@ If the branch's port is 5000, this runs:
 
 1. TangentSwarm checks whether the branch is in the configuration file.
 2. If it is not, swarm assigns it a new port and adds it to the configuration.
-3. It creates a directory for the branch if there is none.
-4. It clones the repository and checks out the branch.
+3. It creates the branch's worktree `<root>/<repo>.<branch>` if there is none, cloning the
+   plain checkout `<root>/<repo>` first if it is missing (see [One worktree per agent](#one-worktree-per-agent)).
+4. It fast-forwards the plain checkout and checks out the branch in the worktree.
 5. For a new repository, it runs the initialization commands, and asks whether to continue if one fails.
 6. It creates a tmux session with the layout the sigils describe.
 7. It starts the configured programs, with the port variables filled in.
@@ -263,6 +264,7 @@ tangentswarm/
   cli.py           swarm CLI + subcommand dispatch
   tmux.py          tmux wrappers (argv lists only; structured list_sessions/list_panes)
   git.py           git helpers
+  worktrees.py     one worktree per agent: layout, sync, .swarm.yaml, spawn/list/remove
   mcp_server.py    swarm-mcp (stdio, or Streamable HTTP with OAuth or an API key)
   auth.py          OAuth resource server + optional built-in authorization server
   auth_cli.py      swarm auth ...
@@ -309,6 +311,75 @@ only after it delivers the message.
 `swarm cloud` and `swarm auth` are reserved words. The other new commands live behind
 `-c`, so `swarm [<repo>] <branch>` keeps its old meaning.
 
+## One worktree per agent
+
+Agents never share a working tree, and no agent ever starts in the plain checkout.
+`swarm -c start-agent`, the `start_agent` MCP tool and `swarm <repo> <branch>` all go
+through `tangentswarm/worktrees.py`, so they behave the same.
+
+```
+~/ver/platform                       plain checkout: always on the default branch, kept current
+~/ver/platform.minavo-auth-fix       worktree for branch minavo/auth-fix
+~/ver/platform.render-freeze         worktree for branch render-freeze
+```
+
+- **Layout.** The top directory is `$TANGENTSWARM_AGENT_ROOT` (default `~/ver`), or
+  `.swarm.root` for `swarm <repo> <branch>`. A worktree lives at
+  `<top>/<repo>.<slug>`, where the slug is the branch name with every `/` turned into
+  `-`. Branch names may only use `[A-Za-z0-9._/-]`, so the slug is one safe path
+  component. `a/b` and `a-b` share a slug. If the directory already holds the other
+  branch, the spawn is refused.
+- **The plain checkout stays on the default branch.** Every spawn runs `git fetch origin`
+  and fast-forwards `<repo>` to `origin/<default>` (from `origin/HEAD`). It refuses loudly
+  if `<repo>` is on another branch, has uncommitted or untracked files, or has diverged.
+- **Branches.** The worktree checks out the local branch if there is one, else tracks
+  `origin/<branch>` if that exists, else creates a new branch (no upstream) from the
+  up-to-date default branch. The default branch itself is refused.
+- **Retrying is safe.** An existing worktree for the branch is reused. If a live agent of
+  the same kind is already in it, `start_agent` returns that pane (`reused: true`) instead
+  of starting another. A different agent there is refused. Operations on one repo are
+  serialised by a lock file in its git dir.
+- **Removal.** `remove_worktree` refuses if a tmux pane or any process has its cwd in the
+  worktree, or if the worktree has uncommitted or untracked changes. There is no force
+  option. `delete_branch` deletes the branch only if it is merged into `origin/<default>`.
+  The plain checkout is never removed.
+
+```sh
+swarm -c start-agent claude platform minavo/auth-fix [--session agents] [--window NAME]
+swarm -c worktrees [platform] [--json]       # repos, worktrees, dirty?, panes working in each
+swarm -c remove-worktree platform minavo/auth-fix [--delete-branch]
+```
+
+### `.swarm.yaml`: sharing big directories
+
+A repo can commit a `.swarm.yaml` at its root, read from the plain checkout on the
+default branch. It lists paths to share with every worktree, so each one does not need
+its own `node_modules` or a Lean/mathlib download of several GB.
+
+```yaml
+worktree:
+  symlink:              # linked from the plain checkout into each worktree
+    - node_modules
+    - auth/node_modules
+    - .lake/packages    # Lean: mathlib and other dependencies (not .lake/build)
+  copy:                 # copied once; an existing file is never overwritten
+    - .claude/settings.local.json
+```
+
+- Nothing in the file is ever run. There is no hook or command key, and unknown keys are
+  an error.
+- Paths are relative to the repo root and use only `[A-Za-z0-9._@+-]` and `/`. They may
+  not contain `..` or touch `.git`. A source that resolves outside the repo is skipped,
+  and so is one that is missing (for example before the first `npm ci`). A spawn retry
+  fills in links that were skipped before.
+- A destination that already exists in the worktree, such as a tracked file, is left
+  alone and reported under `skipped`.
+- The listed paths go into a managed block in the repo's shared `.git/info/exclude`. A
+  `node_modules/` gitignore rule does not match a symlink, so without this every
+  worktree would look dirty.
+- Symlinked directories are shared. Two agents running `npm install` at the same time
+  write into the same `node_modules`.
+
 ## Claude Code cloud sessions (optional)
 
 Requires `pip install 'tangentswarm[cloud]'` and `playwright install chromium`.
@@ -345,8 +416,10 @@ expose port 5002 or 5003.
 | `list_panes(target?, all?)` | read | panes: session, window index/name, pane index/id, active, command, path, size |
 | `capture_pane(target, history_lines?, escapes?)` | read | pane text (`-S -N` scrollback, `-e` escapes) |
 | `send_keys(target, text, enter=true, literal=true)` | shell | agent panes only: literal text, 0.5s, separate Enter; `literal=false` for key names |
-| `list_agents` | read | the registered agents: installed?, binary, exact argv, adapter level; the cwd root |
-| `start_agent(agent, cwd, session="agents", window_name?)` | shell | start a registered agent (enum) in a new window under the cwd root |
+| `list_agents` | read | the registered agents: installed?, binary, exact argv, adapter level; the agent root |
+| `start_agent(agent, repo, branch, session="agents", window_name?)` | shell | start a registered agent (enum) in its own worktree `<root>/<repo>.<branch>` (see [One worktree per agent](#one-worktree-per-agent)) |
+| `list_worktrees(repo?)` | read | repos under the agent root and their worktrees: branch, dirty, on-layout, panes working in each |
+| `remove_worktree(repo, branch, delete_branch=false)` | shell | remove a clean, unused worktree; delete the branch only if merged |
 | `agent_status(target)` | read | registered agent in the pane's foreground, typeable?, prompt blank?, last lines |
 | `pane_ready(target, probe=false)` | read (probe: shell) | is the agent's prompt empty |
 | `wait_for_idle(target, timeout_sec=120, poll_ms, settle_sec)` | read | screen stable + prompt blank |
@@ -384,10 +457,11 @@ with `TANGENTSWARM_AGENT_<NAME>=/abs/path`.
 - `start_agent` runs `[binary, *flags]` as the new window's own process. tmux gets the
   argv as separate arguments and runs it without a shell. Agents without flags go through
   `/usr/bin/env --`, so tmux never falls back to `sh -c`. When the agent exits, the window
-  closes and leaves no shell prompt. `cwd` must resolve, after symlinks, to an existing
-  directory strictly inside `$TANGENTSWARM_AGENT_ROOT` (default `~/ver`). `session` must
-  match `[A-Za-z0-9_-]{1,40}`, and swarm creates it if it is missing. `window_name` is
-  kebab-case, with a default of `<agent>-<dir>`.
+  closes and leaves no shell prompt. `repo` must resolve, after symlinks, to a git main
+  worktree directly inside `$TANGENTSWARM_AGENT_ROOT` (default `~/ver`). The agent runs
+  in that repo's worktree for `branch`, never in the repo itself. `session` must match
+  `[A-Za-z0-9_-]{1,40}`, and swarm creates it if it is missing. `window_name` is
+  kebab-case, with a default of `<agent>-<branch>`.
 - `send_keys`, `tell_agent`, `pane_ready(probe=true)` and `tell_worker` resolve the target
   to the exact pane with `display-message -t`, which is the pane send-keys would hit. They
   list the processes on its tty and go ahead only if a process in the terminal's

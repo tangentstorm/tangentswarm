@@ -1,7 +1,8 @@
 """The fixed set of coding agents swarm-mcp may start and type into.
 
 swarm-mcp never runs a caller-supplied command. `start_agent` launches one of the
-agents below in a project directory under the agent root (default ~/ver). tmux runs
+agents below in its own git worktree under the agent root (default ~/ver; see
+worktrees.py). tmux runs
 the absolute binary path and fixed flags directly, with no shell. The typing tools
 (send_keys, tell_agent, the pane_ready probe and tell_worker) only type into a pane
 whose foreground process is one of these agents, never into a bare shell.
@@ -160,9 +161,11 @@ def default_window_name(agent, cwd):
 # ---------------------------------------------------------------------------
 # starting an agent
 
-def start_agent(agent, cwd, session='agents', window_name=None, run=None):
-    """Start a registered agent in a new window of `session` (created if missing).
-    The argv is passed to tmux as separate arguments, so tmux execs it without a shell."""
+def launch_agent(agent, cwd, session='agents', window_name=None, run=None):
+    """Start a registered agent in a new window of `session` (created if missing), in cwd.
+    The argv is passed to tmux as separate arguments, so tmux execs it without a shell.
+    Internal: callers go through worktrees.spawn_agent, which gives every agent its own
+    worktree and never starts one in the plain checkout."""
     argv = launch_argv(agent)
     real = validate_cwd(cwd)
     validate_session(session)

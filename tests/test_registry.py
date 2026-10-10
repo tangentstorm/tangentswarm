@@ -68,9 +68,9 @@ def test_launch_argv_is_fixed(fake_bins):
 
 def test_unknown_agent_rejected(fake_bins, root):
     with pytest.raises(registry.AgentError, match='unknown agent'):
-        registry.start_agent('bash', 'proj', run=Recorder())
+        registry.launch_agent('bash', 'proj', run=Recorder())
     with pytest.raises(registry.AgentError, match='unknown agent'):
-        registry.start_agent('rm -rf /', 'proj', run=Recorder())
+        registry.launch_agent('rm -rf /', 'proj', run=Recorder())
 
 
 def test_arbitrary_command_rejected_by_the_tool(fake_bins, root, monkeypatch):
@@ -79,28 +79,24 @@ def test_arbitrary_command_rejected_by_the_tool(fake_bins, root, monkeypatch):
     monkeypatch.setattr(tmux, 'has_session', lambda s: True)
     # agent is an enum, so anything else is refused before tmux runs
     with pytest.raises(Exception):
-        call_tool('start_agent', agent='bash', cwd='proj')
+        call_tool('start_agent', agent='bash', repo='proj', branch='x')
     with pytest.raises(Exception):
         call_tool('new_window', session='agents', command='bash')
     with pytest.raises(Exception):
         call_tool('new_session', name='x', command='bash')
     assert rec.calls == []
-    # there is no command parameter, so an extra one is ignored and the fixed argv still runs
-    call_tool('start_agent', agent='claude', cwd='proj', command='bash -c id')
-    argv = rec.calls[0]
-    assert argv[argv.index('--') + 1:] == ['/usr/bin/env', '--', fake_bins['claude']]
-    assert not any('bash' in a or 'id' == a for a in argv)
+    # an extra `command` argument is ignored: see test_worktrees.test_mcp_tools_round_trip
 
 
 def test_not_installed_agent_rejected(fake_bins, root):
     with pytest.raises(registry.AgentError, match='not installed'):
-        registry.start_agent('grok', 'proj', run=Recorder())
+        registry.launch_agent('grok', 'proj', run=Recorder())
 
 
 @pytest.mark.parametrize('cwd', ['/', '/tmp', '..', '../outside', 'proj/../../outside', '', '   '])
 def test_cwd_outside_root_rejected(fake_bins, root, cwd):
     with pytest.raises(registry.AgentError):
-        registry.start_agent('muse', cwd, run=Recorder())
+        registry.launch_agent('muse', cwd, run=Recorder())
 
 
 def test_cwd_root_itself_and_missing_dirs_rejected(root):
@@ -120,16 +116,16 @@ def test_symlink_escape_rejected(fake_bins, root, tmp_path):
 
 def test_bad_names_rejected(fake_bins, root):
     with pytest.raises(registry.AgentError):
-        registry.start_agent('muse', 'proj', session='a:b', run=Recorder())
+        registry.launch_agent('muse', 'proj', session='a:b', run=Recorder())
     for bad in ['Has Caps', 'semi;colon', 'x' * 41, '-lead', 'a..b', '$(id)']:
         with pytest.raises(registry.AgentError):
-            registry.start_agent('muse', 'proj', window_name=bad, run=Recorder())
+            registry.launch_agent('muse', 'proj', window_name=bad, run=Recorder())
 
 
 def test_start_agent_execs_argv_without_a_shell(fake_bins, root, monkeypatch):
     monkeypatch.setattr(tmux, 'has_session', lambda s: True)
     rec = Recorder()
-    out = registry.start_agent('muse', str(root / 'proj'), window_name='swarm-selftest', run=rec)
+    out = registry.launch_agent('muse', str(root / 'proj'), window_name='swarm-selftest', run=rec)
     argv = rec.calls[0]
     assert argv[:2] == ['tmux', 'new-window'] and '-d' in argv
     assert argv[argv.index('-c') + 1] == str((root / 'proj').resolve())
@@ -139,7 +135,7 @@ def test_start_agent_execs_argv_without_a_shell(fake_bins, root, monkeypatch):
     # a flag-less agent is run through env so tmux never falls back to `sh -c`
     rec = Recorder()
     monkeypatch.setattr(tmux, 'has_session', lambda s: False)
-    out = registry.start_agent('claude', 'proj', session='scratch', run=rec)
+    out = registry.launch_agent('claude', 'proj', session='scratch', run=rec)
     argv = rec.calls[0]
     assert argv[:2] == ['tmux', 'new-session'] and argv[argv.index('-s') + 1] == 'scratch'
     assert argv[argv.index('--') + 1:] == ['/usr/bin/env', '--', fake_bins['claude']]
