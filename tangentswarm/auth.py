@@ -1,30 +1,30 @@
-"""OAuth 2.0 / OIDC auth for the Streamable HTTP mode of swarm-mcp.
+"""OAuth 2.0 and OIDC auth for swarm-mcp's Streamable HTTP mode.
 
-The MCP server is an OAuth *resource server*.  It uses the official MCP SDK's
-auth plumbing (BearerAuthBackend, RequireAuthMiddleware, Protected Resource
-Metadata per RFC 9728, the authorization-server routes) and plugs in either:
+The MCP server is an OAuth resource server. It uses the MCP SDK's auth code
+(BearerAuthBackend, RequireAuthMiddleware, Protected Resource Metadata per RFC 9728,
+and the authorization-server routes) and adds one of two modes.
 
-* mode "external": a TokenVerifier for an outside issuer.  JWT access tokens are
-  checked against the issuer's JWKS (signature, iss, aud/resource, exp, scope);
-  opaque tokens fall back to RFC 7662 introspection when configured.  Tokens
-  issued locally with `swarm auth token issue` are also accepted.
+* Mode "external" uses a TokenVerifier for an outside issuer. It checks JWT access
+  tokens against the issuer's JWKS (signature, iss, aud or resource, exp, scope).
+  For opaque tokens it falls back to RFC 7662 introspection when that is set up.
+  It also accepts tokens issued locally with `swarm auth token issue`.
 
-* mode "builtin": a small authorization server (OAuthAuthorizationServerProvider)
-  backed by sqlite under ~/.local/state/tangentswarm/auth.db:
-    - authorization code + PKCE with dynamic client registration (interactive
-      clients); the authorize step is approved by the local admin password or a
-      one-time approval code from `swarm auth approve`
-    - client_credentials for confidential clients made with
-      `swarm auth client add` (secret shown once, stored hashed)
-    - pre-issued bearer tokens from `swarm auth token issue`
-    - refresh tokens and RFC 7009 revocation
+* Mode "builtin" runs a small authorization server (OAuthAuthorizationServerProvider)
+  that stores its state in sqlite at ~/.local/state/tangentswarm/auth.db. It supports:
+    - Authorization code with PKCE and dynamic client registration, for interactive
+      clients. The admin approves the authorize step with the local admin password or
+      a one-time approval code from `swarm auth approve`.
+    - client_credentials for confidential clients made with `swarm auth client add`.
+      The CLI shows the secret once and stores only its hash.
+    - Pre-issued bearer tokens from `swarm auth token issue`.
+    - Refresh tokens and RFC 7009 revocation.
 
-Scopes:  tangentswarm:read  is required for every request (list/capture/status);
-         tangentswarm:shell is additionally required by tools that type into
-         agent panes or start agents (send_keys, tell_agent, start_agent, ...).
+Every request needs the tangentswarm:read scope (list, capture and status tools).
+Tools that type into agent panes or start agents (send_keys, tell_agent, start_agent
+and others) also need tangentswarm:shell.
 
-No secret is ever stored in the repo.  Tokens, client secrets and approval
-codes are stored only as SHA-256 hashes; the admin password as a scrypt hash.
+The repo never holds a secret. The store keeps tokens, client secrets and approval
+codes only as SHA-256 hashes, and the admin password as a scrypt hash.
 """
 from __future__ import annotations
 
@@ -74,11 +74,11 @@ def _env_list(name):
 @dataclass
 class AuthConfig:
     mode: str = 'builtin'                 # builtin | external | apikey (see apikey.py)
-    resource_url: str = ''                # public URL of this MCP endpoint (…/mcp)
+    resource_url: str = ''                # public URL of this MCP endpoint, ending in /mcp
     issuer_url: str = ''                  # authorization server issuer
     audience: str = ''                    # expected aud/resource in tokens
     jwks_url: str | None = None
-    jwks_file: str | None = None          # static JWKS (offline / tests)
+    jwks_file: str | None = None          # static JWKS, for offline use and tests
     required_scopes: list[str] = field(default_factory=lambda: [SCOPE_READ])
     introspection_url: str | None = None
     introspection_client_id: str | None = None
@@ -110,7 +110,8 @@ ENV_KEYS = {
 
 
 def load_auth_config(host='127.0.0.1', port=8765, path='/mcp', overrides=None):
-    """Config precedence: defaults < ~/.config/tangentswarm/mcp-auth.yaml < env < overrides."""
+    """Load the config. Each source overrides the one before it: defaults,
+    ~/.config/tangentswarm/mcp-auth.yaml, environment variables, then overrides."""
     data: dict[str, Any] = {}
     cf = config_file()
     if cf.exists():
@@ -146,7 +147,7 @@ def load_auth_config(host='127.0.0.1', port=8765, path='/mcp', overrides=None):
 
 
 # ---------------------------------------------------------------------------
-# hashing helpers (stdlib only; no hand-rolled crypto)
+# hashing helpers, using only the stdlib and no hand-rolled crypto
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
@@ -208,7 +209,7 @@ CREATE TABLE IF NOT EXISTS approvals (
 
 
 class AuthStore:
-    """Tiny sqlite store at ~/.local/state/tangentswarm/auth.db (mode 0600)."""
+    """Small sqlite store at ~/.local/state/tangentswarm/auth.db (mode 0600)."""
 
     def __init__(self, path=None):
         self.path = path or (paths.state_dir() / 'auth.db')
@@ -338,8 +339,8 @@ class AuthStore:
 # built-in authorization server (SDK provider protocol)
 
 def _access_token_from_row(token, row, default_resource=None):
-    """Pre-issued tokens (swarm auth token issue) carry no resource; they are
-    bound to this server, so they get the server's own resource URL."""
+    """Pre-issued tokens from `swarm auth token issue` carry no resource. They belong
+    to this server, so they get the server's own resource URL."""
     from mcp.server.auth.provider import AccessToken
     return AccessToken(token=token, client_id=row['client_id'], scopes=row['scopes'].split(),
                        expires_at=int(row['expires_at']) if row['expires_at'] else None,
@@ -364,18 +365,18 @@ class BuiltinProvider:
 
     async def register_client(self, client_info):
         info = client_info.model_dump(mode='json', exclude_none=True)
-        # DCR clients: the SDK compares client_secret verbatim, so it is kept
-        # (only) in the 0600 sqlite store.  CLI-made clients keep a hash only.
+        # The SDK compares a DCR client's client_secret verbatim, so the 0600 sqlite
+        # store keeps the secret itself. Clients made with the CLI keep only a hash.
         self.store.save_client(info, kind='dcr')
 
-    # authorization code + PKCE
+    # authorization code with PKCE
     async def authorize(self, client, params):
         data = params.model_dump(mode='json')
         req_id = self.store.put_pending(client.client_id, json.dumps(data))
         return f"{self.config.issuer_url}/login?req={urllib.parse.quote(req_id)}"
 
     def complete_authorization(self, req_id, subject='admin'):
-        """Called by the login page after the admin approved. Returns redirect URL."""
+        """The login page calls this after the admin approves. Returns the redirect URL."""
         from mcp.server.auth.provider import construct_redirect_uri
         pend = self.store.pop_pending(req_id)
         if not pend:
@@ -446,7 +447,7 @@ class BuiltinProvider:
         from mcp.server.auth.provider import TokenError
         raise TokenError('unsupported_grant_type', 'identity assertion grant is not supported')
 
-    # client_credentials (not part of the SDK's token handler; see token_endpoint)
+    # client_credentials grant, which the SDK's token handler lacks (see token_endpoint)
     def client_credentials(self, client_id, client_secret, requested_scopes):
         row = self.store.get_client(client_id)
         if not row or row['kind'] != 'confidential' or not row['secret_hash']:
@@ -476,7 +477,7 @@ def create_confidential_client(store: AuthStore, name: str, scopes: list[str]):
 
 
 # ---------------------------------------------------------------------------
-# external issuer verifier (JWT via JWKS, RFC 7662 introspection fallback)
+# external issuer verifier (JWT via JWKS, with RFC 7662 introspection as a fallback)
 
 class ExternalTokenVerifier:
     """mcp.server.auth.provider.TokenVerifier for an outside OAuth/OIDC issuer."""
@@ -594,7 +595,7 @@ class ExternalTokenVerifier:
 
 
 # ---------------------------------------------------------------------------
-# HTTP routes added next to the SDK's: /token (client_credentials) and /login
+# HTTP routes added next to the SDK's routes, /token for client_credentials and /login
 
 LOGIN_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>tangentswarm login</title>
 <style>body{{font-family:sans-serif;max-width:32em;margin:4em auto}}input{{font-size:1.1em;width:100%;margin:.3em 0}}</style>
@@ -608,7 +609,7 @@ LOGIN_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>tangents
 
 
 def make_extra_routes(provider: BuiltinProvider):
-    """Starlette routes for the built-in AS that the SDK does not provide."""
+    """Starlette routes for the built-in authorization server that the SDK does not provide."""
     from mcp.server.auth.handlers.token import TokenHandler
     from mcp.server.auth.middleware.client_auth import ClientAuthenticator
     from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse

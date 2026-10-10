@@ -1,10 +1,10 @@
 """Swarm control-directory config: workers.jsonl and known-agents.jsonl.
 
-Port of the config helpers duplicated across scialect's tell-worker.mts,
-local-status.mts, local-step.mts and for-all.mts.  As in scialect, the
-"control dir" is the current directory by default; it holds workers.jsonl
-(one {"id","dir","session","window"} per line), optionally known-agents.jsonl,
-and a git-tracked rules/ directory of prompt guides.
+This ports the config helpers that scialect repeats in tell-worker.mts,
+local-status.mts, local-step.mts and for-all.mts. As in scialect, the control dir is
+the current directory by default. It holds workers.jsonl (one
+{"id","dir","session","window"} per line), an optional known-agents.jsonl, and a
+git-tracked rules/ directory of prompt guides.
 """
 import json
 import os
@@ -35,7 +35,7 @@ class WorkerConfig:
 
     @property
     def target(self):
-        """Main pane of the worker's window, e.g. 'jc:3.0'."""
+        """Return the main pane of the worker's window, such as 'jc:3.0'."""
         return f"{self.session}:{self.window}.0"
 
     @property
@@ -73,7 +73,7 @@ def find_worker(worker_id, cdir=None):
 
 
 def load_known_agents(cdir=None):
-    """known-agents.jsonl from the control dir, else scialect's defaults."""
+    """Read known-agents.jsonl from the control dir, or return scialect's defaults."""
     try:
         return _read_jsonl(control_dir(cdir) / 'known-agents.jsonl')
     except (OSError, ValueError):
@@ -81,7 +81,7 @@ def load_known_agents(cdir=None):
 
 
 def read_status_line(worker_or_dir):
-    """Full trimmed contents of <dir>/.sci/status-line ('' if missing)."""
+    """Return the trimmed contents of <dir>/.sci/status-line, or '' if it is missing."""
     d = worker_or_dir.path if isinstance(worker_or_dir, WorkerConfig) else expand_home(worker_or_dir)
     try:
         with open(os.path.join(d, '.sci', 'status-line'), encoding='utf-8') as f:

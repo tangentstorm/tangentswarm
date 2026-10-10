@@ -50,7 +50,7 @@ def test_missing_and_wrong_key_get_401_everywhere(tmp_path):
                            {'Authorization': f'Basic {KEY}', 'Accept': 'application/json, text/event-stream'})
         assert st == 401 and json.loads(body)['error'] == 'invalid_token'
         assert {k.lower(): v for k, v in h.items()}['www-authenticate'].startswith('Bearer')
-        # no OAuth routes, and even unknown paths are gated (401, not 404)
+        # no OAuth routes, and unknown paths need the key too (401, not 404)
         for p in ('/.well-known/oauth-authorization-server', '/register', '/token', '/login', '/nope'):
             assert http('GET', srv.base + p)[0] == 401
 
@@ -63,7 +63,7 @@ def test_valid_key_initializes_lists_and_runs_tools(tmp_path, header):
         tools = [t['name'] for t in m.call('tools/list')['result']['tools']]
         assert 'tell_agent' in tools and not [t for t in tools if 'kill' in t]
         assert 'shell_exec' not in tools
-        # a shell-scope tool runs with the key (unknown worker: refused without touching tmux)
+        # a shell-scope tool runs with the key, and refuses an unknown worker without touching tmux
         (tmp_path / 'workers.jsonl').write_text('')
         res = m.call('tools/call', {'name': 'tell_worker',
                                     'arguments': {'control_dir': str(tmp_path), 'worker': 'nobody', 'verb': 'accept'}})

@@ -1,6 +1,6 @@
-"""`uses:` dependency annotations on prompt guides (port of scialect src/rule-deps.mts).
+"""Read `uses:` dependency annotations on prompt guides (port of scialect src/rule-deps.mts).
 
-A guide may declare, in a frontmatter block, the other rules/ files it uses:
+A guide can list the other rules/ files it uses in a frontmatter block:
 
     ---
     uses: [commit-guide.md, status-guide.md]
@@ -43,8 +43,8 @@ def uses_of(text):
 
 
 def resolve_dependencies(start, get_content):
-    """Transitive closure of `uses:` (excluding start), breadth-first and
-    alphabetical within a level; cycles and missing guides are tolerated."""
+    """Return the transitive closure of `uses:`, not including start. The order is
+    breadth-first and alphabetical within a level. Cycles and missing guides are allowed."""
     seen = {start}
     result = []
     frontier = [start]

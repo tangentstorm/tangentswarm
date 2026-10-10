@@ -1,15 +1,13 @@
-"""Persistent-context Playwright launcher (port of scialect src/browser.mts).
+"""Launch Playwright with a persistent context (port of scialect src/browser.mts).
 
-The Chromium profile (with the claude.ai login cookie) lives OUTSIDE the
-repo, by default in ~/.local/share/tangentswarm/playwright-profile
-(override: TANGENTSWARM_PROFILE_DIR).  Credentials are never stored in the
-repo.  Optionally TANGENTSWARM_STORAGE_STATE may point at a Playwright
-storage-state JSON file (outside the repo) whose cookies are loaded into
-the context at launch.
+The Chromium profile, which holds the claude.ai login cookie, lives outside the repo
+in ~/.local/share/tangentswarm/playwright-profile. TANGENTSWARM_PROFILE_DIR overrides
+that path. TANGENTSWARM_STORAGE_STATE can point at a Playwright storage-state JSON
+file, also outside the repo, whose cookies the context loads at launch.
 
-First login is manual, exactly as in scialect: `swarm cloud login` opens a
-headed browser at claude.ai/code; a human signs in, and the cookie stays in
-the profile.  Shut down cleanly (Ctrl-C, not SIGKILL) so it is flushed.
+The first login is manual, as in scialect. `swarm cloud login` opens a headed browser
+at claude.ai/code, a person signs in, and the cookie stays in the profile. Stop the
+browser with Ctrl-C, not SIGKILL, so Chromium writes the cookie to disk.
 """
 import asyncio
 import json
@@ -32,7 +30,7 @@ class NotLoggedIn(RuntimeError):
 
 
 class BotChallenge(NotLoggedIn):
-    """Cloudflare's "Just a moment..." interstitial is blocking the page."""
+    """Cloudflare's "Just a moment..." page is in front of the app."""
 
 
 @dataclass
@@ -111,9 +109,9 @@ async def goto_claude_code(page, timeout_ms=30_000):
 
 
 async def login(profile_dir=None, timeout=900, poll=2.0, channel=None, out=sys.stderr):
-    """Manual first login: open a HEADED browser at claude.ai/code and wait
-    (up to `timeout` s) for a human to finish signing in, then close cleanly
-    so the cookie is flushed to the profile.  Returns True if logged in."""
+    """Do the manual first login. Open a headed browser at claude.ai/code, wait up to
+    `timeout` seconds for a person to sign in, then close the browser cleanly so the
+    cookie reaches the profile. Returns True if the login worked."""
     handle = await launch_browser(profile_dir, headed=True, channel=channel)
     try:
         await handle.page.goto(CLAUDE_CODE_URL, wait_until='domcontentloaded')

@@ -1,7 +1,7 @@
 """In-memory swarm state with change detection (port of scialect src/swarm.mts).
 
-Used by the cloud orchestrator server to push `swarm-status` deltas to
-subscribed websocket clients.
+The cloud orchestrator uses it to push `swarm-status` changes to subscribed
+websocket clients.
 """
 import sys
 import time
@@ -28,9 +28,9 @@ def update_swarm_state(new_state):
 def rows_to_state(rows):
     """Rows are [id, agent, state, health, status].
 
-    Note: scialect's swarm.mts destructures rows as [id, agent, state, status],
-    which actually picks up the *health* column; here status is the real
-    status column and health is passed along as an extra field.
+    scialect's swarm.mts destructures rows as [id, agent, state, status], which picks
+    up the health column as status. Here status is the real status column, and health
+    is an extra field.
     """
     state = {}
     for row in rows:

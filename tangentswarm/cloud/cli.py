@@ -1,5 +1,5 @@
-"""`swarm cloud ...` subcommands (scialect's cli.mts, server.mts, client.mts,
-the vite configs, plus the manual login flow)."""
+"""The `swarm cloud ...` subcommands. They port scialect's cli.mts, server.mts,
+client.mts and vite configs, and add the manual login flow."""
 import argparse
 import asyncio
 import json

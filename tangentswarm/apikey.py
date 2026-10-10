@@ -1,25 +1,26 @@
-"""Static API-key gate for swarm-mcp's Streamable HTTP mode (auth mode "apikey").
+"""Static API key check for swarm-mcp's Streamable HTTP mode (auth mode "apikey").
 
 Every HTTP request must carry the key, either as ``Authorization: Bearer <key>`` or as
-``X-API-Key: <key>``.  The check runs in a pure-ASGI middleware wrapped around the whole
-app, so a request without a valid key gets ``401`` before any MCP handling (session
-manager, DNS-rebinding checks, routing) sees it.  Comparison is constant-time
-(``hmac.compare_digest`` over SHA-256 digests, so the key length is not leaked either).
+``X-API-Key: <key>``. A pure ASGI middleware around the whole app does the check, so a
+request without a valid key gets ``401`` before any MCP handling (session manager,
+DNS-rebinding checks, routing) sees it. The comparison uses ``hmac.compare_digest`` over
+SHA-256 digests, so it takes constant time and does not leak the key length.
 
-Where the key comes from (first match wins; the key itself is never logged):
+The server takes the key from the first of these that is set, and never logs it:
 
 1. ``--api-key-file PATH``
 2. ``$TANGENTSWARM_API_KEY``
 3. ``$TANGENTSWARM_API_KEY_FILE``
 4. ``~/.config/tangentswarm/api_key``
 
-A key file must not be readable by group/others (chmod 600).  The server refuses to start
-in apikey mode when no key is configured or the key is shorter than 32 characters.
-Generate one with ``swarm-mcp --gen-api-key [PATH]`` (written 0600, nothing printed).
+A key file must not be readable by group or others (chmod 600). The server refuses to
+start in apikey mode when no key is set or the key is shorter than 32 characters.
+``swarm-mcp --gen-api-key [PATH]`` writes a new key with mode 0600 and prints only the
+path and a fingerprint.
 
 A valid key grants every scope (tangentswarm:read and tangentswarm:shell). There is no
-arbitrary-command tool: start_agent only launches the registered coding agents and
-send_keys/tell_agent only type into panes running one. Those agents can still run
+tool that runs an arbitrary command. start_agent only launches the registered coding
+agents, and send_keys and tell_agent only type into panes that run one. Those agents can still run
 commands when told to, so treat the key like an SSH private key.
 """
 from __future__ import annotations
@@ -90,7 +91,7 @@ def load_api_key(key_file=None, env=None):
 
 
 def generate_key_file(path=None) -> str:
-    """Write a fresh random key to path (0600, refuses to overwrite). Returns the path."""
+    """Write a new random key to path with mode 0600 and return the path. Refuses to overwrite a file."""
     path = os.path.expanduser(str(path or default_key_file()))
     if os.path.exists(path):
         raise ApiKeyError(f'{path} already exists; remove it first to rotate the key')
@@ -103,9 +104,11 @@ def generate_key_file(path=None) -> str:
 
 
 class ApiKeyMiddleware:
-    """Pure-ASGI gate: lifespan passes through, every http/websocket request needs the key.
+    """Pure ASGI middleware that requires the key on every http and websocket request.
+    Lifespan events pass through.
 
-    Pure ASGI (not BaseHTTPMiddleware) so SSE / streaming responses are untouched.
+    It is pure ASGI rather than BaseHTTPMiddleware, so SSE and streaming responses pass
+    through unchanged.
     """
 
     def __init__(self, app, key: str):

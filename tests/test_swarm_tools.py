@@ -89,7 +89,7 @@ def test_tell_worker_accept_commits_after_send(control, monkeypatch):
     assert tui.sent and tui.sent[0].startswith('Your recent work has been accepted!')
     assert 'proving-guide.md has just been updated' in tui.sent[0]
     assert (wdir / '.sci' / 'status-line').read_text() == 'WORKING: plan next step\n'
-    assert (wdir / '.sci' / 'status-guide.md').read_text() == 'status rules\n'   # uses: closure
+    assert (wdir / '.sci' / 'status-guide.md').read_text() == 'status rules\n'   # the uses: closure
 
 
 def test_tell_worker_is_atomic_when_prompt_busy(control, monkeypatch):

@@ -1,16 +1,15 @@
 """The fixed set of coding agents swarm-mcp may start and type into.
 
-swarm-mcp never runs a caller-supplied command. `start_agent` launches one of
-the agents below (absolute binary path + fixed flags, executed directly by
-tmux, no shell) in a project directory under the agent root (default
-~/ver), and the typing tools (send_keys, tell_agent, pane_ready probe,
-tell_worker) only type into a pane whose *foreground* process is one of
-these agents -- never into a bare shell.
+swarm-mcp never runs a caller-supplied command. `start_agent` launches one of the
+agents below in a project directory under the agent root (default ~/ver). tmux runs
+the absolute binary path and fixed flags directly, with no shell. The typing tools
+(send_keys, tell_agent, the pane_ready probe and tell_worker) only type into a pane
+whose foreground process is one of these agents, never into a bare shell.
 
-Because the agent is the pane's own process, the window closes when the
-agent exits: there is no shell prompt left behind to type into.
+The agent is the pane's own process, so the window closes when the agent exits and
+leaves no shell prompt to type into.
 
-The operator (not the MCP caller) can override:
+The operator, not the MCP caller, can set these overrides:
   TANGENTSWARM_AGENT_ROOT    project root agents may start in (default ~/ver)
   TANGENTSWARM_AGENT_<NAME>  absolute path of that agent's binary
 """
@@ -34,11 +33,11 @@ class AgentError(ValueError):
 @dataclass(frozen=True)
 class AgentSpec:
     name: str
-    candidates: tuple            # binary paths, '~' expanded at lookup time
+    candidates: tuple            # binary paths, with '~' expanded at lookup time
     flags: tuple = ()            # fixed flags; callers can never add any
     names: frozenset = field(default_factory=frozenset)       # exact process names
     prefixes: tuple = ()         # process-name prefixes (versioned binaries)
-    adapter: str = 'none'        # 'full' (prompt detector verified) / 'basic' / 'none'
+    adapter: str = 'none'        # 'full' (prompt detector verified), 'basic' or 'none'
 
     def matches(self, name):
         return name in self.names or any(name.startswith(p) for p in self.prefixes)
@@ -76,7 +75,7 @@ def _executable(p):
 
 
 def resolve_binary(name):
-    """Absolute path of an installed agent's binary, or None."""
+    """Return the absolute path of an installed agent's binary, or None."""
     spec = REGISTRY[name]
     override = os.environ.get(f'TANGENTSWARM_AGENT_{name.upper()}')
     cands = (override,) if override else spec.candidates
@@ -94,7 +93,7 @@ def _exec_argv(path, flags):
 
 
 def launch_argv(name):
-    """The exact argv start_agent runs for an agent. Raises AgentError."""
+    """Return the exact argv start_agent runs for an agent. Raises AgentError."""
     if name not in REGISTRY:
         raise AgentError(f"unknown agent {name!r}; allowed: {', '.join(AGENT_NAMES)}")
     path = resolve_binary(name)
@@ -104,7 +103,7 @@ def launch_argv(name):
 
 
 def registry_info():
-    """[{name, installed, path, argv, adapter}] for docs/tools."""
+    """Return [{name, installed, path, argv, adapter}] for docs and tools."""
     out = []
     for name, spec in REGISTRY.items():
         path = resolve_binary(name)
@@ -126,7 +125,7 @@ def agent_root():
 
 def validate_cwd(cwd):
     """Resolve cwd (absolute, or relative to the agent root) to a real directory strictly
-    inside the agent root; symlinks are resolved first, so they cannot escape it."""
+    inside the agent root. Symlinks are resolved first, so they cannot lead outside it."""
     if not isinstance(cwd, str) or not cwd.strip() or any(c in cwd for c in '\0\n\r'):
         raise AgentError('cwd must be a directory under ' + agent_root())
     root = agent_root()
@@ -185,8 +184,8 @@ def start_agent(agent, cwd, session='agents', window_name=None, run=None):
 # recognising a running agent
 
 def process_names(comm, args):
-    """Names a process goes by: its comm, argv[0]'s basename and, for interpreters,
-    the script's basename (node /x/codex.js -> codex.js)."""
+    """Return the names a process goes by. These are its comm, argv[0]'s basename and, for
+    interpreters, the script's basename (codex.js for node /x/codex.js)."""
     toks = (args or '').split(None, 2)
     names = {comm} if comm else set()
     if toks:
@@ -198,7 +197,7 @@ def process_names(comm, args):
 
 
 def classify_process(comm, args):
-    """Registered agent name for one process, or None."""
+    """Return the registered agent name for one process, or None."""
     names = process_names(comm, args)
     for spec in REGISTRY.values():
         if any(spec.matches(n) for n in names):
@@ -207,9 +206,9 @@ def classify_process(comm, args):
 
 
 def agent_from_processes(procs):
-    """procs: [(pid, stat, comm, args)] on a pane's tty. Only processes in the terminal's
+    """procs is [(pid, stat, comm, args)] for a pane's tty. Only processes in the terminal's
     foreground process group ('+' in stat) count, so a suspended agent under a shell
-    prompt does not make that shell typeable."""
+    prompt does not let anyone type into that shell."""
     for pid, stat, comm, args in procs:
         if '+' not in stat:
             continue

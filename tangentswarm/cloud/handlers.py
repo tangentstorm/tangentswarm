@@ -11,7 +11,7 @@ class ClientState:
 
 
 async def dispatch(deps, c, req, sessions=S):
-    """deps: object with .page, .with_active_chat(chat_id, coro_fn), .broadcast(frame)."""
+    """deps is an object with .page, .with_active_chat(chat_id, coro_fn) and .broadcast(frame)."""
     kind = req.get('kind')
     rid = req.get('id', '?')
     if kind == 'ping':

@@ -1,4 +1,4 @@
-"""Streamable HTTP + OAuth: run the real app under uvicorn on a free port."""
+"""Streamable HTTP with OAuth. Runs the real app under uvicorn on a free port."""
 import base64
 import hashlib
 import json
@@ -153,7 +153,7 @@ def test_preissued_token_and_scope_enforcement(tmp_path):
         tools = [t['name'] for t in m.call('tools/list')['result']['tools']]
         assert 'tell_agent' in tools and 'shell_exec' not in tools
         assert not [t for t in tools if 'kill' in t]
-        (tmp_path / 'workers.jsonl').write_text('')     # unknown worker: refused without touching tmux
+        (tmp_path / 'workers.jsonl').write_text('')     # an unknown worker is refused without touching tmux
         worker_args = {'control_dir': str(tmp_path), 'worker': 'nobody', 'verb': 'accept'}
         res = m.call('tools/call', {'name': 'tell_worker', 'arguments': worker_args})
         assert not res['result'].get('isError') and '"ok": false' in res['result']['content'][0]['text']
@@ -165,7 +165,7 @@ def test_preissued_token_and_scope_enforcement(tmp_path):
         res = r.call('tools/call', {'name': 'send_keys', 'arguments': {'target': 'x:0', 'text': 'no'}})
         assert res['result']['isError'] and 'tangentswarm:shell' in res['result']['content'][0]['text']
 
-        assert Mcp(srv, shell_only).initialize()[0] == 403     # every request needs :read
+        assert Mcp(srv, shell_only).initialize()[0] == 403     # every request needs tangentswarm:read
         assert Mcp(srv, expired).initialize()[0] == 401
         assert Mcp(srv, revoked).initialize()[0] == 401
 
@@ -281,7 +281,7 @@ def test_external_jwt_validation(jwks_env):
         assert ro.initialize()[0] == 200
         res = ro.call('tools/call', {'name': 'send_keys', 'arguments': {'target': 'x:0', 'text': 'no'}})
         assert res['result']['isError'] and 'insufficient_scope' in res['result']['content'][0]['text']
-        # PRM points at the external issuer
+        # the protected resource metadata names the external issuer
         prm = json.loads(http('GET', srv.base + '/.well-known/oauth-protected-resource/mcp')[2])
         assert prm['authorization_servers'][0].rstrip('/') == ISSUER
 

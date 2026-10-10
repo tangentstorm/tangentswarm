@@ -1,9 +1,9 @@
 """Swarm status table (port of scialect src/local-status.mts).
 
-For every worker in workers.jsonl: detected agent, state, health and status,
-where state/status come from .sci/status-line (or goal.md/result.md mtimes
-and the git branch), and health flags a WORKING worker whose screen has not
-changed for 10 minutes, or a manager stuck REVIEWING for 5 minutes, as STUCK.
+For every worker in workers.jsonl, the table shows the detected agent, state, health
+and status. State and status come from .sci/status-line, or from the goal.md and
+result.md mtimes and the git branch. Health is STUCK for a WORKING worker whose screen
+has not changed for 10 minutes, or a manager that has been REVIEWING for 5 minutes.
 """
 import json
 import os
@@ -36,7 +36,7 @@ def format_state(goal_mtime, result_mtime):
 
 
 def git_status_summary(cwd):
-    """' (M:2 ??:1)'-style summary of `git status --porcelain` ('' if clean)."""
+    """Summarize `git status --porcelain` as ' (M:2 ??:1)', or '' if the tree is clean."""
     try:
         r = subprocess.run(['git', 'status', '--porcelain'], cwd=cwd, stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, check=False)
@@ -84,7 +84,7 @@ def screen_hash(session, window):
 
 
 def _update_screen_state(state_path, current_hash, now):
-    """Returns True if the screen has been unchanged for WORKER_STUCK_SECS."""
+    """Return True if the screen has not changed for WORKER_STUCK_SECS."""
     try:
         if os.path.exists(state_path):
             st = json.loads(open(state_path).read())
@@ -101,7 +101,7 @@ def _update_screen_state(state_path, current_hash, now):
 
 
 def collect_swarm_rows(cdir=None):
-    """List of [id, agent, state, health, status] rows."""
+    """Return a list of [id, agent, state, health, status] rows."""
     rules = load_known_agents(cdir)
     rows = []
     for w in load_workers(cdir):
@@ -144,14 +144,14 @@ def collect_swarm_rows(cdir=None):
                     except OSError:
                         pass
             rows.append([w.id, detected or 'unknown', state, health, status])
-        except Exception as e:  # per-worker failure -> ERROR row
+        except Exception as e:  # a failure for one worker becomes an ERROR row
             rows.append([w.id, 'unknown', 'ERROR', 'ERR', str(e)[:80]])
     return rows
 
 
 def format_swarm_table(rows, max_width=MAX_TABLE_WIDTH):
-    """Render rows as an aligned table no wider than max_width (the status
-    column absorbs any overflow and is cut with an ellipsis)."""
+    """Render rows as an aligned table no wider than max_width. The status column
+    takes up any overflow and ends in an ellipsis when cut."""
     all_rows = [HEADERS] + rows
     widths = [max(len(r[i] if i < len(r) else '') for r in all_rows) for i in range(len(HEADERS))]
     sep = ' | '

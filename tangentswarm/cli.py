@@ -11,7 +11,7 @@ from pathlib import Path
 from . import tmux
 from . import git
 
-# Use ~/.swarm.yaml as config file, fall back to local swarm.yaml if not found
+# Use ~/.swarm.yaml, or ./swarm.yaml if that does not exist
 CONFIG_FILE = os.path.expanduser('~/.swarm.yaml')
 LOCAL_CONFIG_FILE = 'swarm.yaml'
 
@@ -48,7 +48,7 @@ def load_config():
     # If no config files found, return default config
     return {
         '.swarm': {
-            'root': '.'  # Default to current directory
+            'root': '.'  # Default to the current directory
         },
         'example_repo': {
             'branches': {
@@ -62,8 +62,8 @@ def load_config():
 def save_config(config):
     """Save configuration to YAML file.
 
-    Saves to ~/.swarm.yaml in the user's home directory.
-    This allows accessing the configuration from anywhere on the system.
+    Saves to ~/.swarm.yaml in the user's home directory, so swarm finds the
+    same config from any directory.
     """
     # Make sure ~/.swarm.yaml is used for saving
     with open(CONFIG_FILE, 'w') as f:
@@ -110,7 +110,7 @@ def _tell_agent(argv):
 
 
 def run_subcommand(name, argv):
-    """New subcommands (scialect ports, cloud, auth). Returns an exit code."""
+    """Run a newer subcommand (a scialect port, cloud or auth) and return its exit code."""
     if name == 'cloud':
         from .cloud import cli as cloud_cli
         return cloud_cli.main(argv)
@@ -136,8 +136,8 @@ def run_subcommand(name, argv):
     raise KeyError(name)
 
 
-# `swarm cloud ...` / `swarm auth ...` are reserved words; everything else new
-# lives behind `-c` so `swarm [<repo>] <branch>` keeps its meaning.
+# `swarm cloud ...` and `swarm auth ...` are reserved words. Every other new command
+# lives behind `-c`, so `swarm [<repo>] <branch>` keeps its meaning.
 BARE_SUBCOMMANDS = ('cloud', 'auth')
 DASH_C_SUBCOMMANDS = ('local-status', 'tell-worker', 'for-all', 'step', 'agent-status',
                       'tell-agent', 'cloud', 'auth')
@@ -151,20 +151,18 @@ def get_args():
         print("No repositories configured.")
         sys.exit(1)
 
-    # Handle -h / --help (print usage and exit successfully)
+    # -h or --help prints usage and exits with status 0
     if len(args) == 1 and args[0] in ("-h", "--help"):
         print_usage()
         sys.exit(0)
 
-    # Handle the status command
     if len(args) == 2 and args[0] == "-c" and args[1] == "status":
         return "status", None, None, None
 
-    # Handle regular branch commands
     if len(args) == 1:
-        # Only branch name provided, use first repo (ignoring .swarm config entry)
+        # Only a branch name was given, so use the first repo, skipping the .swarm entry
         branch_name = args[0]
-        # Filter out the .swarm config entry
+        # Skip the .swarm entry
         repo_urls = [url for url in config.keys() if url != '.swarm']
         if not repo_urls:
             print("No repositories configured.")
@@ -173,11 +171,9 @@ def get_args():
         repo_name = repo_url.split('/')[-1].split('.')[0]
         return "branch", repo_name, repo_url, branch_name
     elif len(args) == 2:
-        # Repo name and branch provided
         repo_name = args[0]
         branch_name = args[1]
 
-        # Find the repo URL from config
         repo_url = None
         for url in config:
             if url.endswith(repo_name) or repo_name in url:
@@ -206,27 +202,24 @@ def extract_sigil_and_command(command_str):
     if not command_str:
         return (SIGIL_NEW_WINDOW, command_str)
 
-    # Split the command to check for sigil prefix
     parts = command_str.split(' ', 1)
 
-    # Use conditional logic instead of match statement
     if len(parts) == 2 and parts[0] in VALID_SIGILS:
-        # Valid sigil found with command
+        # A valid sigil followed by a command
         return (parts[0], parts[1])
     else:
-        # No valid sigil or no command after sigil
+        # No valid sigil, or nothing after the sigil
         return (SIGIL_NEW_WINDOW, command_str)
 
 def create_tmux_session(session_name, branch_dir):
     """Create a new tmux session."""
-    # Create a new session with the shell
     try:
         tmux.new_session(session_name, cwd=branch_dir, command=tmux.DEFAULT_SHELL)
     except tmux.TmuxError as e:
         print(f"Error creating session: {e.stderr}")
         return False
 
-    # Rename the window to make it more recognizable
+    # Name the window so it is easy to find
     tmux.rename_window(f'{session_name}:0', 'main')
 
     return True
@@ -236,7 +229,6 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
     if not programs:
         return False
 
-    # Create the initial session
     if not create_tmux_session(session_name, branch_dir):
         return False
 
@@ -246,7 +238,7 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
     # Track whether we've used the initial window yet
     initial_window_used = False
 
-    # Count number of non-tmux commands at the beginning
+    # Count the non-tmux commands at the start
     non_tmux_commands = 0
     for cmd in programs:
         sigil, _ = extract_sigil_and_command(cmd)
@@ -255,71 +247,66 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
         else:
             break
 
-    # Build environment export commands if env dictionary is provided
+    # Build export commands for any env variables
     env_exports = ""
     if env:
         for key, value in env.items():
             env_exports += f"export {key}=\"{value}\"; "
 
-    # Process each program command with its sigil
     for i, program in enumerate(programs):
         sigil, cmd = extract_sigil_and_command(program)
 
-        # Replace port variables in the command
         cmd = replace_port_variables(cmd, port)
 
-        # Add environment variables to the command if available
+        # Prefix the command with the env exports
         if env_exports and sigil != SIGIL_TMUX_COMMAND and sigil != SIGIL_TEMP_WINDOW:
             cmd = f"{env_exports} {cmd}"
 
-        # Handle non-window commands (TEMP_WINDOW and TMUX_COMMAND)
+        # Commands that open no window (TEMP_WINDOW and TMUX_COMMAND)
         if sigil == SIGIL_TMUX_COMMAND:
             # Run tmux command against this session
             tmux.run_tmux_command(session_name, cmd)
             continue
 
         elif sigil == SIGIL_TEMP_WINDOW:
-            # For temporary commands, run directly with subprocess instead of in tmux
+            # Run ! commands with subprocess instead of in tmux
             print(f"Running temporary command: {cmd}")
             try:
-                # Build environment dictionary with current environment plus any specified vars
+                # Use the current environment plus the configured variables
                 env_dict = os.environ.copy()
                 if env:
                     env_dict.update(env)
 
-                # Run command directly with shell=True for proper shell interpretation
+                # shell=True so the shell interprets the command
                 result = subprocess.run(cmd, shell=True, cwd=branch_dir, env=env_dict,
                                        stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 
-                # Display output if any
                 if result.stdout.strip():
                     print(f"Command output: {result.stdout.strip()}")
 
-                # Check for errors
                 if result.returncode != 0:
                     print(f"Command failed with exit code {result.returncode}: {result.stderr.strip()}")
             except Exception as e:
                 print(f"Error executing command: {e}")
             continue
 
-        # Handle window and pane commands - use initial window if possible
+        # Window and pane commands use the initial window first
         if not initial_window_used:
-            # This is the first window-based command - use the initial window
+            # This is the first window command, so it uses the initial window
             initial_window_used = True
             tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
             continue
 
-        # Apply the sigil and run the command based on the type
+        # Lay out the window or pane that the sigil asks for and run the command
         if sigil == SIGIL_NEW_WINDOW:
             # Create a new window with the next available index
             current_window += 1
             result = tmux.new_window_args('-t', session_name, '-c', branch_dir)
             if result.returncode == 0:
                 current_pane = 0
-                # Rename the window based on the command (use first word)
+                # Name the window after the first word of the command
                 window_name = cmd.split()[0] if cmd else f"win{current_window}"
                 tmux.rename_window(f'{session_name}:{current_window}', window_name)
-                # Run the command in the new window
                 tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
             else:
                 print(f"Failed to create new window: {result.stderr}")
@@ -329,7 +316,6 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
             result = tmux.split_window(f'{session_name}:{current_window}.{current_pane}', '-h', branch_dir)
             if result.returncode == 0:
                 current_pane += 1
-                # Run the command in the new pane
                 tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
             else:
                 print(f"Failed to create horizontal split: {result.stderr}")
@@ -339,7 +325,6 @@ def setup_and_run_programs(session_name, branch_dir, programs, port, env=None):
             result = tmux.split_window(f'{session_name}:{current_window}.{current_pane}', '-v', branch_dir)
             if result.returncode == 0:
                 current_pane += 1
-                # Run the command in the new pane
                 tmux.send_keys(f'{session_name}:{current_window}.{current_pane}', cmd)
             else:
                 print(f"Failed to create vertical split: {result.stderr}")
@@ -363,7 +348,7 @@ def get_branch_env(config, repo_url, branch_name):
     """Get environment dictionary from branch config."""
     branch_config = config[repo_url]['branches'][branch_name]
 
-    # If branch config is a dictionary with 'env' key
+    # A branch config can be a dict with an 'env' key
     if isinstance(branch_config, dict) and 'env' in branch_config:
         return branch_config['env']
     return {}
@@ -374,10 +359,8 @@ def get_combined_env(config, repo_url, branch_name):
     """
     env = {}
 
-    # Start with repo env
     env.update(get_repo_env(config, repo_url))
 
-    # Override with branch env
     env.update(get_branch_env(config, repo_url, branch_name))
 
     return env
@@ -402,13 +385,13 @@ def replace_port_variables(command, port):
     # Replace ${PORT} with the actual port
     command = command.replace('${PORT}', str(port))
 
-    # Find and replace ${PORT+n} patterns
+    # Replace ${PORT+n} patterns
     pattern = r'\${PORT\+(\d+)}'
     matches = re.findall(pattern, command)
 
     for offset in matches:
         offset_value = int(offset)
-        if offset_value <= 9:  # Limit to single digits for simplicity
+        if offset_value <= 9:  # n is a single digit
             new_port = port + offset_value
             command = command.replace(f'${{PORT+{offset}}}', str(new_port))
 
@@ -417,7 +400,7 @@ def replace_port_variables(command, port):
 def restart_session(session_name, branch_dir, programs, port, env=None):
     """Restart the session by killing it and creating a new one.
 
-    Note: This function is kept for API compatibility but is not used directly by main().
+    main() does not call this. It stays for API compatibility.
     """
     max_attempts = 3
     attempt = 0
@@ -431,29 +414,28 @@ def restart_session(session_name, branch_dir, programs, port, env=None):
             # First try normal kill-session
             subprocess.run(['tmux', 'kill-session', '-t', session_name], check=False)
         elif attempt == 2:
-            # Second try with more direct approach
+            # Second try, through the shell
             subprocess.run(['tmux', 'kill-session', '-t', session_name, '||', 'true'], shell=True, check=False)
         else:
-            # Last resort, kill tmux server (only do this if we're really stuck)
+            # As a last resort, kill the tmux server
             print("Warning: Using kill-server as last resort...")
             subprocess.run(['tmux', 'kill-server'], check=False)
 
-        # Add a delay to ensure tmux has time to clean up
+        # Give tmux time to clean up
         time.sleep(1)
 
-    # Final verification
     if session_exists(session_name):
         print(f"Warning: Failed to kill session {session_name} after {max_attempts} attempts.")
         print("Proceeding anyway, but you may need to manually clean up tmux sessions.")
 
-    # Wait a moment before creating the new session
+    # Wait before creating the new session
     time.sleep(0.5)
 
-    # Create a new session with the specified layout and environment
+    # Create a new session with the configured layout and environment
     setup_and_run_programs(session_name, branch_dir, programs, port, env)
-    return True  # Return True to indicate success (doesn't propagate the result of setup_and_run_programs)
+    return True  # Always return True. The result of setup_and_run_programs is not passed on.
 
-# Define Chrome's unsafe ports to avoid globally
+# Chrome refuses to connect to these ports, so swarm never assigns them
 CHROME_UNSAFE_PORTS = [5060, 5061] + list(range(6000, 6064))
 
 def is_unsafe_port(port):
@@ -463,22 +445,22 @@ def is_unsafe_port(port):
 def get_swarm_root(config):
     """Get the root directory for branch directories from the config.
 
-    Looks for .swarm.root in the configuration. If not found, defaults to current directory.
-    The root is expanded to handle ~ for the user's home directory.
+    Uses .swarm.root from the configuration, or the current directory if it is not set.
+    A leading ~ expands to the user's home directory.
     """
     if '.swarm' in config and 'root' in config['.swarm']:
         # Expand any ~ in the path to the user's home directory
         return os.path.expanduser(config['.swarm']['root'])
-    return '.'  # Default to current directory
+    return '.'  # Default to the current directory
 
 def get_branch_port(config, repo_url, branch_name):
     """Extract port from branch configuration, which can be an integer or a dictionary with a 'port' key."""
     branch_config = config[repo_url]['branches'][branch_name]
 
-    # If branch_config is a dictionary with a 'port' key
+    # branch_config can be a dict with a 'port' key
     if isinstance(branch_config, dict) and 'port' in branch_config:
         return branch_config['port']
-    # Otherwise, assume it's a direct port number
+    # Otherwise it is a plain port number
     return branch_config
 
 def check_for_unsafe_ports(config):
@@ -492,7 +474,7 @@ def check_for_unsafe_ports(config):
     for repo_url, repo_config in config.items():
         if 'branches' in repo_config:
             for branch_name, branch_config in repo_config['branches'].items():
-                # Extract port depending on the format (integer or dictionary)
+                # The port is an int or a dict with a 'port' key
                 port = get_branch_port(config, repo_url, branch_name)
 
                 if is_unsafe_port(port):
@@ -502,15 +484,15 @@ def check_for_unsafe_ports(config):
 
 def find_next_available_port(used_ports):
     """Find the next available port in the range 5000-6000 with gaps of 10."""
-    # Generate all possible ports in the range with gaps of 10, excluding unsafe ports
+    # Every tenth port from 5000 to 6000, minus unsafe ports
     all_ports = [port for port in range(5000, 6001, 10) if not is_unsafe_port(port)]
 
-    # Find the first available port that's not in used_ports
+    # Return the first one not in used_ports
     for port in all_ports:
         if port not in used_ports:
             return port
 
-    # If all ports are used, start over from 5000 (shouldn't happen with this range)
+    # If every port is taken, fall back to 5000
     return 5000
 
 def run_init_commands(branch_dir, init_commands, port, env=None):
@@ -530,11 +512,10 @@ def run_init_commands(branch_dir, init_commands, port, env=None):
 
     print("Running initialization commands...")
     for cmd in init_commands:
-        # Replace port variables in the command
         processed_cmd = replace_port_variables(cmd, port)
         print(f"Executing: {processed_cmd}")
 
-        # Set up environment for subprocess
+        # Environment for the subprocess
         env_dict = os.environ.copy()
         if env:
             env_dict.update(env)
@@ -565,7 +546,6 @@ def checkout_branch(branch_dir, branch_name):
     """
     print(f"Checking out branch '{branch_name}'...")
 
-    # First check if branch exists locally
     local_branches = git.branch_list(cwd=branch_dir).stdout
 
     # Check if the branch exists locally
@@ -617,8 +597,8 @@ def checkout_branch(branch_dir, branch_name):
 def get_session_name(branch_name, branch_port, repo_name):
     """Generate the session name based on branch name.
 
-    Use consistent format: port/branch_name for all branches
-    For 'main' branch, use the repo_name instead of 'main'
+    The format is port/branch_name. The 'main' branch uses the repo name
+    in place of 'main'.
 
     Args:
         branch_name: Name of the branch
@@ -638,20 +618,20 @@ def setup_tracking(branch_dir, branch_name):
     # First check if tracking is already set up
     branch_info = git.branch_verbose(cwd=branch_dir).stdout
 
-    # Look for branch name with tracking info (inside square brackets)
+    # Tracking info appears in square brackets after the branch name
     pattern = re.compile(rf'[* ] {re.escape(branch_name)}\s+[0-9a-f]+ \[')
     tracking_set = bool(pattern.search(branch_info))
 
     if tracking_set:
         return
 
-    # If no tracking is set, check if the branch exists on remote
+    # No tracking is set, so check whether the branch exists on the remote
     if branch_exists_on_remote(branch_dir, branch_name):
         # Set up tracking to origin/branch_name
         print(f"Setting upstream for branch '{branch_name}' to origin/{branch_name}")
         git.branch_set_upstream(branch_name, f'origin/{branch_name}', cwd=branch_dir)
     else:
-        # Branch doesn't exist on remote, just configure upstream without pushing
+        # The branch is not on the remote, so configure the upstream without pushing
         configure_upstream(branch_dir, branch_name)
 
 def pull_branch(branch_dir, branch_name):
@@ -664,7 +644,7 @@ def pull_branch(branch_dir, branch_name):
     # Try a normal pull
     result = git.pull(cwd=branch_dir, ff_only=True)
 
-    # If successful, we're done
+    # Done if the pull worked
     if result.returncode == 0:
         if "Already up to date" in result.stdout:
             print("Already up to date.")
@@ -672,31 +652,27 @@ def pull_branch(branch_dir, branch_name):
             print("Successfully pulled latest changes.")
 
 def show_branch_status():
-    """Loop through all branches defined in the config, check directories and .swarm status files.
-    Display three categories:
+    """Show every configured branch, using its directory and .swarm-status file.
+    The display has three groups:
     1. Inactive repositories and branches
     2. Active branches without tmux sessions
     3. Active branches with tmux sessions in a format similar to tmux switcher
     """
     config = load_config()
 
-    # Track different categories
     inactive_repos = {}   # Structure: {repo_name: [branch_names]}
     active_no_tmux = []   # Structure: [{repo, branch, port, status}]
     active_tmux = []      # Structure: [{repo, branch, port, status, session_name}]
 
-    # Get current tmux sessions
     active_tmux_sessions = []
     try:
         active_tmux_sessions = [s['name'] for s in tmux.list_sessions()]
     except Exception:
-        # Silently handle the case where tmux is not running
+        # tmux may not be running
         pass
 
-    # Get root directory from config
     root_dir = get_swarm_root(config)
 
-    # Go through each repo in the config
     for repo_url, repo_config in config.items():
         # Skip the .swarm config entry
         if repo_url == '.swarm':
@@ -708,12 +684,10 @@ def show_branch_status():
         repo_has_active_branch = False
         inactive_branches = []
 
-        # Go through each branch in the repo
         if 'branches' in repo_config:
             for branch_name in repo_config['branches'].keys():
                 branch_dir = os.path.join(root_dir, f"{repo_name}.{branch_name}")
 
-                # Check if the directory exists
                 if os.path.exists(branch_dir):
                     repo_has_active_branch = True
                     status = ""
@@ -725,20 +699,17 @@ def show_branch_status():
                             with open(swarm_status_file, 'r') as f:
                                 status = f.readline().strip()
                         except Exception:
-                            # Silently ignore errors reading the file
+                            # Ignore errors reading the file
                             pass
 
-                    # Get branch port
                     branch_config = repo_config['branches'][branch_name]
                     if isinstance(branch_config, dict) and 'port' in branch_config:
                         port = branch_config['port']
                     else:
                         port = branch_config
 
-                    # Get session name
                     session_name = get_session_name(branch_name, port, repo_name)
 
-                    # Check if session exists in tmux
                     if session_name in active_tmux_sessions:
                         # Active tmux session
                         active_tmux.append({
@@ -819,12 +790,11 @@ def show_branch_status():
     if all_tmux_sessions:
         # Determine width for num column based on number of sessions
         num_width = len(str(len(all_tmux_sessions) - 1))
-        num_width = max(num_width, 1)  # At least 1 char wide
+        num_width = max(num_width, 1)  # at least 1 character wide
 
         print("Active tmux sessions:")
         print()
 
-        # Sort by session name
         all_tmux_sessions.sort(key=lambda x: x['session_name'])
 
         # Get current session if we're in tmux
@@ -863,7 +833,6 @@ def show_branch_status():
                 finally:
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-                # Try to convert to integer
                 idx = int(ch)
                 if 0 <= idx < len(all_tmux_sessions):
                     session_name = all_tmux_sessions[idx]['session_name']
@@ -888,17 +857,14 @@ def main():
     if len(argv) >= 2 and argv[0] == '-c' and argv[1] in DASH_C_SUBCOMMANDS:
         sys.exit(run_subcommand(argv[1], argv[2:]))
 
-    # Load arguments
     command, repo_name, repo_url, branch_name = get_args()
 
-    # Handle status command
     if command == "status":
         show_branch_status()
         return
 
-    # Branch command mode - the original behavior
+    # Branch command mode
     if command == "branch":
-        # Load config
         config = load_config()
 
         # Check for unsafe ports in the configuration
@@ -925,7 +891,6 @@ def main():
         # Ensure branch exists in repo config
         branch_port = None
         if branch_name not in config[repo_url]['branches']:
-            # Collect all used ports
             used_ports = set()
             for repo_config in config.values():
                 if 'branches' in repo_config:
@@ -936,18 +901,16 @@ def main():
                             # Handle direct port assignment
                             used_ports.add(b_config)
                 else:
-                    # Handle legacy config format for backwards compatibility
+                    # Legacy config format
                     used_ports.update(repo_config.values())
 
-            # Find next available port (this will automatically avoid unsafe ports)
+            # find_next_available_port skips unsafe ports
             port = find_next_available_port(used_ports)
 
-            # Add new branch with port
             config[repo_url]['branches'][branch_name] = port
             save_config(config)
             branch_port = port
         else:
-            # Use existing port for this branch
             branch_port = get_branch_port(config, repo_url, branch_name)
 
             # Check if this branch's port is unsafe
@@ -966,7 +929,7 @@ def main():
                                 if r_url == repo_url and b_name == branch_name:
                                     continue
 
-                                # Extract port depending on format
+                                # The port is an int or a dict with a 'port' key
                                 if isinstance(b_config, dict) and 'port' in b_config:
                                     used_ports.add(b_config['port'])
                                 else:
@@ -976,7 +939,7 @@ def main():
                     new_port = find_next_available_port(used_ports)
                     print(f"Reassigning port from {branch_port} to {new_port}")
 
-                    # Update config - preserve environment if it exists
+                    # Update the config and keep any existing environment
                     branch_config = config[repo_url]['branches'][branch_name]
                     if isinstance(branch_config, dict):
                         branch_config['port'] = new_port
@@ -988,19 +951,14 @@ def main():
                     save_config(config)
                     branch_port = new_port
 
-        # Get programs to launch
         programs = get_programs(config, repo_url)
 
-        # Get initialization commands
         init_commands = get_init_commands(config, repo_url)
 
-        # Get combined environment variables
         combined_env = get_combined_env(config, repo_url, branch_name)
 
-        # Get root directory from config
         root_dir = get_swarm_root(config)
 
-        # Checkout directory
         branch_dir = os.path.join(root_dir, f"{repo_name}.{branch_name}")
         branch_dir_path = Path(branch_dir).resolve()
 
@@ -1010,7 +968,6 @@ def main():
             is_new_repo = True
             os.makedirs(branch_dir)
 
-            # Clone repo
             print(f"Cloning repository {repo_url} into {branch_dir}")
             git.clone(repo_url, branch_dir)
 
@@ -1031,16 +988,14 @@ def main():
                 # Ensure tracking is properly set up
                 setup_tracking(branch_dir, branch_name)
 
-            # Pull latest changes
             pull_branch(branch_dir, branch_name)
         else:
             # For existing repositories, check if current branch matches requested branch
             print(f"Using existing repository at {branch_dir}")
 
-            # Get current branch
             current_branch = git.branch_show_current(cwd=branch_dir).stdout.strip()
 
-            # If we're not on the requested branch, ask the user what to do
+            # Not on the requested branch, so ask the user what to do
             if current_branch != branch_name:
                 print(f"Current branch is '{current_branch}', but requested branch is '{branch_name}'")
                 response = input(f"Switch to '{branch_name}' branch? [Y/n]: ")
@@ -1058,8 +1013,7 @@ def main():
                 else:
                     # User wants to stay on current branch
                     print(f"Keeping current branch: '{current_branch}'")
-                    # Use the current branch name instead of requested branch
-                    # for all subsequent operations including session naming
+                    # Use the current branch name from here on, including for the session name
                     branch_name = current_branch
                     # Ensure tracking is properly set up
                     setup_tracking(branch_dir, branch_name)
@@ -1067,9 +1021,8 @@ def main():
                     pull_branch(branch_dir, branch_name)
             else:
                 print(f"Already on branch '{branch_name}'")
-                # Even if already on the branch, ensure tracking is properly set up
+                # Already on the branch, but make sure tracking is set up
                 setup_tracking(branch_dir, branch_name)
-                # Pull latest changes
                 pull_branch(branch_dir, branch_name)
 
         # Run initialization commands for new repositories
@@ -1080,15 +1033,13 @@ def main():
                     print("Operation cancelled")
                     sys.exit(1)
 
-        # Generate the session name using the helper function
         session_name = get_session_name(branch_name, branch_port, repo_name)
 
-        # Check if the session already exists
         if session_exists(session_name):
             print(f"Session {session_name} already exists.")
             response = input("Restart session? [y/N]: ")
             if response.lower() == 'y':
-                # Don't call restart_session - we'll handle it directly to avoid double setup
+                # Kill the session here instead of calling restart_session, which would run the setup twice
                 max_attempts = 3
                 attempt = 0
 
@@ -1101,26 +1052,24 @@ def main():
                         # First try normal kill-session
                         subprocess.run(['tmux', 'kill-session', '-t', session_name], check=False)
                     elif attempt == 2:
-                        # Second try with more direct approach
+                        # Second try, through the shell
                         subprocess.run(['tmux', 'kill-session', '-t', session_name, '||', 'true'], shell=True, check=False)
                     else:
-                        # Last resort, kill tmux server (only do this if we're really stuck)
+                        # As a last resort, kill the tmux server
                         print("Warning: Using kill-server as last resort...")
                         subprocess.run(['tmux', 'kill-server'], check=False)
 
-                    # Add a delay to ensure tmux has time to clean up
+                    # Give tmux time to clean up
                     time.sleep(1)
 
-                # Final verification
                 if session_exists(session_name):
                     print(f"Warning: Failed to kill session {session_name} after {max_attempts} attempts.")
                     print("Proceeding anyway, but you may need to manually clean up tmux sessions.")
 
-                # Wait a moment before creating the new session
+                # Wait before creating the new session
                 time.sleep(0.5)
 
-        # Create/recreate session with the specified layout
-        # This will be used both for new sessions and after killing existing ones
+        # Create the session with the configured layout, either new or after killing the old one
         print(f"Creating tmux session: {session_name}")
         setup_and_run_programs(session_name, branch_dir, programs, branch_port, combined_env)
 
