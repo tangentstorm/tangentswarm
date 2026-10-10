@@ -2,7 +2,7 @@
 import subprocess
 
 def run_git_cmd(args, cwd=None, capture_output=True, text=True, check=False, stdout=None, stderr=None):
-    """Common helper function to run git commands with consistent defaults."""
+    """Run a git command with the defaults the other helpers share."""
     cmd = ['git'] + args
     return subprocess.run(
         cmd,
@@ -138,9 +138,9 @@ def stash_list(cwd=None, check=False):
     return run_git_cmd(['stash', 'list'], cwd=cwd, check=check)
 
 def set_upstream_tracking(branch, remote='origin', cwd=None):
-    """Configure branch's upstream tracking without pushing.
-    
-    This sets the tracking configuration directly in git config.
+    """Configure a branch's upstream tracking without pushing.
+
+    This writes the tracking settings straight into git config.
     """
     config_set(f'branch.{branch}.remote', remote, cwd=cwd)
     config_set(f'branch.{branch}.merge', f'refs/heads/{branch}', cwd=cwd)

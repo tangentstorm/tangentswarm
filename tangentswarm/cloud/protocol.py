@@ -1,24 +1,24 @@
 """Wire protocol between the cloud hub and its clients (port of scialect src/protocol.mts).
 
-Every frame is one JSON object per websocket message.  Requests carry an
-`id`; the matching reply echoes it.  Server-pushed events have no id and use
-kind "event".
+Each websocket message is one JSON object. A request carries an `id`, and the
+matching reply echoes it. Events that the server pushes have no id and use kind
+"event".
 
-client -> server kinds: list, use{chatId}, send{text}, status{chatId?}, latest,
+client to server kinds: list, use{chatId}, send{text}, status{chatId?}, latest,
                         ping, subscribe{channel}, swarm-status, register{workerType}
-server -> client kinds: ok, list{chats,active}, use{active}, status{chat},
+server to client kinds: ok, list{chats,active}, use{active}, status{chat},
                         latest{text}, pong, swarm-status{changes}, error{message}
 events:                 hello{serverVersion}, chat-update{chat},
                         message{chatId,text}, swarm-status{changes}
 
-A ChatRef is {"id", "label", "transport": "cloud"|"tmux", "status"?, "slug"?};
-for cloud chats id == label == the sidebar session name.
+A ChatRef is {"id", "label", "transport": "cloud"|"tmux", "status"?, "slug"?}.
+For cloud chats, id and label are both the sidebar session name.
 """
 import json
 import uuid
 
-DEFAULT_PORT = 5002        # standalone server / thin orchestrator
-CLOUD_PORT = 5003          # browser-owning cloud server behind the orchestrator
+DEFAULT_PORT = 5002        # standalone server or the orchestrator
+CLOUD_PORT = 5003          # cloud server that owns the browser, behind the orchestrator
 WS_PATH = '/ws'
 SERVER_VERSION = '0.1.0'
 

@@ -1,7 +1,6 @@
-"""Sidebar reading and per-session actions on claude.ai/code
-(port of scialect src/sessions.mts).
+"""Read the claude.ai/code sidebar and act on single sessions (port of scialect src/sessions.mts).
 
-Statuses: running | awaiting | ready | ci | ci-pass | ci-fail | idle | unknown.
+A session's status is one of running, awaiting, ready, ci, ci-pass, ci-fail, idle or unknown.
 """
 import re
 
@@ -10,7 +9,7 @@ from .browser import CHAT_INPUT
 SESSION_ROW = '[data-row-key^="code:session_"]'
 STATUSES = ['running', 'awaiting', 'ready', 'ci', 'ci-pass', 'ci-fail', 'idle', 'unknown']
 
-# One page-context evaluate for all rows (round-trips dominate with 100+ rows).
+# Read all rows in one evaluate() call, because round trips dominate with 100+ rows.
 _LIST_JS = r"""(rowSel) => {
   const rows = Array.from(document.querySelectorAll(rowSel));
   return rows.map((row) => {
@@ -76,7 +75,7 @@ def classify_status(kind, indicator_label, signals):
 
 
 def summarize_rows(raw):
-    """Turn the raw evaluate() rows into SessionSummary dicts."""
+    """Convert the raw evaluate() rows to SessionSummary dicts."""
     out = []
     for r in raw:
         if not r.get('text'):
@@ -112,7 +111,7 @@ async def send_message(page, message):
 
 
 async def get_latest_response(page):
-    """Text of the most recent transcript message (any author), or None."""
+    """Return the text of the most recent transcript message from any author, or None."""
     return await page.evaluate(_LATEST_JS)
 
 

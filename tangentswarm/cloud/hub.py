@@ -4,8 +4,8 @@ and the vite.cloud.config.mts plugin).
     swarm cloud serve                 # browser + hub on ws://127.0.0.1:5002/ws
     swarm cloud serve --port 5003     # the "cloud" server behind the orchestrator
 
-Binds 127.0.0.1 only; there is no authentication on this socket (same as
-scialect), so never expose it.
+It binds only 127.0.0.1. The socket has no authentication, as in scialect, so never
+expose it.
 """
 import asyncio
 import json
@@ -24,7 +24,7 @@ class Hub:
     def __init__(self, handle=None, dispatch_fn=dispatch, open_session=None):
         self.handle = handle
         self.dispatch_fn = dispatch_fn
-        self.clients = {}            # ws -> ClientState
+        self.clients = {}            # maps each websocket to its ClientState
         self.browser_workers = set()
         self._page_lock = asyncio.Lock()
         self._currently_open = None
@@ -41,7 +41,7 @@ class Hub:
         return self.handle.page
 
     async def with_active_chat(self, chat_id, fn):
-        """Serialize page use; navigate to chat_id first if needed."""
+        """Run one page action at a time, opening chat_id first if needed."""
         async with self._page_lock:
             if self._currently_open != chat_id:
                 await self._open_session(self.page, chat_id)
@@ -148,6 +148,6 @@ def run_server(host='127.0.0.1', port=P.DEFAULT_PORT, headed=True, profile_dir=N
         await stop
         log('\n[tangentswarm-cloud] shutting down…')
         task.cancel()
-        await handle.close()     # clean close so the login cookie is flushed
+        await handle.close()     # close cleanly so Chromium writes the login cookie to disk
 
     asyncio.run(main())

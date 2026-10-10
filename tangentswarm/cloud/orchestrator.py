@@ -1,9 +1,9 @@
-"""Thin orchestrator on :5002 (port of scialect vite.config.mts's plugin).
+"""Small orchestrator on port 5002 (port of the plugin in scialect's vite.config.mts).
 
-Answers `subscribe swarm` (with a full snapshot) and `swarm-status` itself,
-polls the local swarm (workers.jsonl in the control dir) every 2s and pushes
-deltas, and relays every other request to the browser-owning cloud server
-on :5003 (`swarm cloud serve --port 5003`).
+It answers `subscribe swarm` (with a full snapshot) and `swarm-status` itself. It
+polls the local swarm (workers.jsonl in the control dir) every 2s and pushes the
+changes. It relays every other request to the cloud server that owns the browser on
+port 5003 (`swarm cloud serve --port 5003`).
 """
 import asyncio
 import json

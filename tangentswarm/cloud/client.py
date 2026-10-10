@@ -1,5 +1,5 @@
-"""Websocket client for the cloud hub, the interactive REPL (port of scialect
-src/client.mts) and the helpers behind the cloud_* MCP tools (the logic of
+"""Websocket client for the cloud hub. It has the interactive REPL (port of scialect
+src/client.mts) and the helpers behind the cloud_* MCP tools (port of the logic in
 scialect src/mcp-server.mts)."""
 import asyncio
 import json

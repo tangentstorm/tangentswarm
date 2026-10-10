@@ -1,27 +1,27 @@
-"""swarm-mcp: an MCP server for driving tmux sessions, the coding agents
-running in them, and Claude Code cloud sessions.
+"""swarm-mcp is an MCP server that drives tmux sessions, the coding agents running in
+them, and Claude Code cloud sessions.
 
-Transports
-  stdio (default)   `swarm-mcp`; meant to be launched over SSH with a forced
-                    command (the SSH key is the authentication).
-  Streamable HTTP   `swarm-mcp --http [--host 127.0.0.1] [--port 8765]`; an
-                    OAuth 2.0 resource server -- every request needs a bearer
-                    token (see tangentswarm/auth.py and the README).
-                    With `--auth-mode apikey` every request instead needs one
-                    static API key (Authorization: Bearer / X-API-Key), checked
-                    before any MCP handling (see tangentswarm/apikey.py).
+It has two transports.
 
-Scopes (OAuth HTTP modes only; stdio is authenticated by SSH, and a valid API key
-in apikey mode grants every scope)
-  tangentswarm:read   list/capture/status tools  (required for every request)
-  tangentswarm:shell  tools that type into agent panes or start agents
+* stdio is the default (`swarm-mcp`). Launch it over SSH with a forced command, so
+  the SSH key does the authentication.
+* Streamable HTTP (`swarm-mcp --http [--host 127.0.0.1] [--port 8765]`) is an OAuth 2.0
+  resource server, and every request needs a bearer token (see tangentswarm/auth.py and
+  the README). With `--auth-mode apikey`, every request needs one static API key
+  instead (Authorization: Bearer or X-API-Key). The server checks it before any MCP
+  handling (see tangentswarm/apikey.py).
 
-There is deliberately NO arbitrary-command tool (shell_exec was removed) and NO
-kill-pane / kill-window / kill-session tools. start_agent only launches the fixed
-agents in tangentswarm/registry.py (no caller-supplied command or arguments) in a
-directory under the agent root, and every typing tool refuses a pane whose foreground
-process is not one of those agents (a bash prompt, say).
-Nothing but MCP protocol traffic goes to stdout; logs go to stderr.
+The OAuth HTTP modes use two scopes. tangentswarm:read covers the list, capture and
+status tools, and every request needs it. tangentswarm:shell covers the tools that
+type into agent panes or start agents. SSH authenticates stdio, and a valid key in
+apikey mode grants every scope.
+
+There is no tool that runs an arbitrary command (shell_exec is gone), and there are no
+kill-pane, kill-window or kill-session tools. start_agent only launches the fixed agents
+in tangentswarm/registry.py, with no caller-supplied command or arguments, in a
+directory under the agent root. Every typing tool refuses a pane whose foreground
+process is not one of those agents, such as a bash prompt.
+Only MCP protocol traffic goes to stdout. Logs go to stderr.
 """
 import argparse
 import functools
@@ -52,7 +52,7 @@ AUTH_ENFORCED = False
 # True in apikey mode: ApiKeyMiddleware has already rejected every request without the key.
 API_KEY_MODE = False
 
-TOOL_SCOPES = {}   # tool name -> scope, for docs and tests
+TOOL_SCOPES = {}   # maps tool name to scope, for docs and tests
 
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -75,7 +75,7 @@ def require_scope(scope):
 
 
 def _scoped(scope):
-    """Decorator recording and enforcing a tool's scope (works for sync and async)."""
+    """Decorator that records and enforces a tool's scope, for sync and async tools."""
     def deco(fn):
         TOOL_SCOPES[fn.__name__] = scope
         # Errors are re-raised as ToolError so the client sees the real message
@@ -131,9 +131,9 @@ def list_sessions() -> dict:
 
 @_scoped(SCOPE_READ)
 def list_panes(target: str | None = None, all: bool = False) -> dict:
-    """List panes. target: a session ('agents', all its windows) or window ('agents:1').
+    """List panes. target is a session ('agents', for all its windows) or a window ('agents:1').
     all=true lists every pane on the server. Each pane has session, window_index,
-    window_name, pane_index, pane_id, active, current_command, current_path, width, height."""
+    window_name, pane_index, pane_id, active, current_command, current_path, width and height."""
     try:
         return {'panes': tmux.list_panes(target=target, all=all or not target)}
     except tmux.TmuxError as e:
@@ -152,10 +152,11 @@ def capture_pane(target: str, history_lines: int | None = None, escapes: bool = 
 
 @_scoped(SCOPE_SHELL)
 async def send_keys(target: str, text: str, enter: bool = True, literal: bool = True) -> dict:
-    """Type into a coding agent's pane (refused unless the pane's foreground process is a
-    registered agent -- never a shell). literal=true (default) sends the text verbatim with
-    send-keys -l, then (if enter) waits 0.5s and presses Enter in a separate call.
-    literal=false passes `text` as tmux key names (e.g. 'C-c', 'Escape', 'Up')."""
+    """Type into a coding agent's pane. Refused unless the pane's foreground process is a
+    registered agent, so it never types into a shell. literal=true (the default) sends the
+    text verbatim with send-keys -l, then, if enter is set, waits 0.5s and presses Enter in
+    a separate call. literal=false passes `text` as tmux key names, such as 'C-c', 'Escape'
+    or 'Up'."""
     def run():
         pane = agents.require_agent_pane(target)
         pid = pane['pane_id']
@@ -176,10 +177,11 @@ async def send_keys(target: str, text: str, enter: bool = True, literal: bool = 
 
 @_scoped(SCOPE_READ)
 def list_agents() -> dict:
-    """The agents start_agent can launch: name, installed, binary path, exact argv, and
-    adapter level (full = prompt detection verified; basic = detector ported, unverified
-    here; none = start/type only, tell_agent needs require_empty_prompt=false). Also the
-    project root start_agent's cwd must be under."""
+    """List the agents start_agent can launch, with name, installed, binary path, exact argv
+    and adapter level. Adapter "full" means prompt detection is verified. "basic" means the
+    detector is ported but unverified here. "none" means start and type only, so tell_agent
+    needs require_empty_prompt=false. Also returns the project root that start_agent's cwd
+    must be under."""
     return {'agents': registry.registry_info(), 'cwd_root': registry.agent_root()}
 
 
@@ -187,9 +189,9 @@ def list_agents() -> dict:
 def start_agent(agent: registry.AgentName, cwd: str, session: str = 'agents',
                 window_name: str | None = None) -> dict:
     """Start a registered coding agent (no other command can be run) in a new window of
-    `session` (created if missing), without switching clients. cwd: a project directory
-    under the agent root (~/ver by default; absolute or relative to it; symlinks may not
-    escape). window_name: kebab-case, default '<agent>-<dir>'. The agent is the window's
+    `session` (created if missing), without switching clients. cwd is a project directory
+    under the agent root (~/ver by default), either absolute or relative to it, and symlinks
+    may not lead outside it. window_name is kebab-case, default '<agent>-<dir>'. The agent is the window's
     own process, so the window closes when the agent exits. Returns the new pane."""
     try:
         return registry.start_agent(agent, cwd, session=session, window_name=window_name)
@@ -199,8 +201,9 @@ def start_agent(agent: registry.AgentName, cwd: str, session: str = 'agents',
 
 @_scoped(SCOPE_READ)
 async def agent_status(target: str) -> dict:
-    """Which coding agent (claude, codex, gemini, opencode...) runs in a pane, whether its input
-    prompt is blank, its current command/path and the last screen lines. Read-only."""
+    """Report which coding agent (claude, codex, gemini, opencode and others) runs in a pane,
+    whether its input prompt is blank, its current command and path, and the last screen
+    lines. Read-only."""
     try:
         return await anyio.to_thread.run_sync(agents.agent_status, target)
     except tmux.TmuxError as e:
@@ -209,8 +212,9 @@ async def agent_status(target: str) -> dict:
 
 @_scoped(SCOPE_READ)
 async def pane_ready(target: str, probe: bool = False) -> dict:
-    """Is the agent's input prompt empty? probe=true uses scialect's space probe (types a space,
-    checks, then backspaces) to see past placeholder text; it needs the shell scope."""
+    """Report whether the agent's input prompt is empty. probe=true uses scialect's space probe
+    (type a space, check, then backspace) to see past placeholder text. The probe needs the
+    shell scope."""
     if probe:
         require_scope(SCOPE_SHELL)
     try:
@@ -222,8 +226,9 @@ async def pane_ready(target: str, probe: bool = False) -> dict:
 @_scoped(SCOPE_READ)
 async def wait_for_idle(target: str, timeout_sec: float = 120, poll_ms: int = 1000,
                         settle_sec: float = 3) -> dict:
-    """Wait (max 600s) until the agent in a pane looks idle: screen unchanged for settle_sec
-    and, for known agents, the prompt is blank. Returns idle true/false and waited_sec."""
+    """Wait up to 600s until the agent in a pane looks idle. The screen must stay unchanged for
+    settle_sec and, for known agents, the prompt must be blank. Returns idle (true or false)
+    and waited_sec."""
     timeout_sec = max(1.0, min(float(timeout_sec), 600.0))
     poll = max(0.25, min(poll_ms / 1000.0, 10.0))
     try:
@@ -236,9 +241,10 @@ async def wait_for_idle(target: str, timeout_sec: float = 120, poll_ms: int = 10
 @_scoped(SCOPE_SHELL)
 async def tell_agent(target: str, text: str, new_conversation: bool = False,
                      require_empty_prompt: bool = True) -> dict:
-    """Send a message to a coding agent the way scialect's tell-worker does: make sure the prompt
-    is empty (space probe; refuses if someone is typing), optionally '/new' + Enter + 10s wait,
-    then type the text literally, wait 0.5s, press Enter."""
+    """Send a message to a coding agent the way scialect's tell-worker does. It makes sure the
+    prompt is empty with the space probe and refuses if someone is typing. Then it optionally
+    sends '/new', presses Enter and waits 10s. Last, it types the text literally, waits 0.5s
+    and presses Enter."""
     try:
         return await anyio.to_thread.run_sync(lambda: agents.tell_agent(
             target, text, new_conversation=new_conversation, require_empty_prompt=require_empty_prompt))
@@ -250,8 +256,8 @@ async def tell_agent(target: str, text: str, new_conversation: bool = False,
 
 @_scoped(SCOPE_READ)
 async def swarm_status(control_dir: str) -> dict:
-    """scialect's local-status table for the workers in <control_dir>/workers.jsonl:
-    id, agent, state, health (OK/STUCK/ERR), status."""
+    """Return scialect's local-status table for the workers in <control_dir>/workers.jsonl,
+    with id, agent, state, health (OK, STUCK or ERR) and status."""
     from . import local_status
     rows = await anyio.to_thread.run_sync(lambda: local_status.collect_swarm_rows(control_dir))
     return {'workers': local_status.rows_as_dicts(rows)}
@@ -260,8 +266,9 @@ async def swarm_status(control_dir: str) -> dict:
 @_scoped(SCOPE_SHELL)
 async def tell_worker(control_dir: str, worker: str, verb: str, arg: str | None = None) -> dict:
     """Run a scialect state-machine handoff (tell-worker) using <control_dir>/workers.jsonl and
-    its git-committed rules/. verb: assigned, accept, plan-approved, adjust, unblocked, reject,
-    rebase [branch], or for the manager: review|approve-task|unblock <worker>."""
+    its git-committed rules/. verb is one of assigned, accept, plan-approved, adjust,
+    unblocked, reject or rebase [branch]. For the manager, verb is review, approve-task or
+    unblock <worker>."""
     import io
     from .tell_worker import TellWorker, TellWorkerError
 
@@ -293,8 +300,8 @@ def _cloud():
 
 @_scoped(SCOPE_READ)
 async def cloud_list_sessions() -> dict:
-    """List Claude Code cloud sessions visible in the claude.ai/code sidebar (id = visible name,
-    status, URL slug). Needs the cloud hub (`swarm cloud serve`) running."""
+    """List the Claude Code cloud sessions in the claude.ai/code sidebar, with id (the visible
+    name), status and URL slug. Needs the cloud hub (`swarm cloud serve`) running."""
     return await _cloud().cloud_list_sessions()
 
 
@@ -307,17 +314,18 @@ async def cloud_send_message(session_id: str, text: str) -> dict:
 
 @_scoped(SCOPE_READ)
 async def cloud_get_latest_response(session_id: str) -> dict:
-    """Text of the most recent message in a cloud session's transcript (any author, so it can
-    echo your own message right after cloud_send_message)."""
+    """Return the text of the most recent message in a cloud session's transcript. It can be
+    from any author, so right after cloud_send_message it may be your own message."""
     return await _cloud().cloud_get_latest_response(session_id)
 
 
 @_scoped(SCOPE_SHELL)
 async def cloud_wait_for_response(session_id: str, text: str | None = None, timeout_sec: int = 120,
                                   poll_ms: int = 1500) -> dict:
-    """Optionally send text, then poll until the session leaves running/awaiting AND the last
-    transcript message differs from before. timeout_sec default 120, max 600; poll_ms 250-10000.
-    Returns status, text, settled (false on timeout) and elapsed_sec."""
+    """Optionally send text, then poll until the session is no longer running or awaiting and
+    the last transcript message has changed. timeout_sec defaults to 120, with a maximum of
+    600. poll_ms must be between 250 and 10000. Returns status, text, settled (false on
+    timeout) and elapsed_sec."""
     return await _cloud().cloud_wait_for_response(session_id, text, timeout_sec, poll_ms)
 
 
@@ -395,7 +403,7 @@ def build_http_app(host='127.0.0.1', port=8765, path='/mcp', overrides=None):
         # /token (adds client_credentials, delegating other grants to the SDK) and /login
         app.router.routes[0:0] = A.make_extra_routes(provider)
     if api_key is not None:
-        # outermost layer: no key, no MCP (or anything else)
+        # outermost layer, so a request without the key reaches nothing
         app = K.ApiKeyMiddleware(app, api_key)
     return app, cfg, provider
 
