@@ -436,8 +436,6 @@ and point the MCP client at ssh:
 swarm-mcp --http --host 127.0.0.1 --port 8765        # endpoint: http://127.0.0.1:8765/mcp
 ```
 
-A systemd user unit for this lives in `contrib/systemd/swarm-mcp-http.service`.
-
 The server is an OAuth 2.0 **resource server** built on the MCP SDK's auth support:
 
 - `GET /.well-known/oauth-protected-resource/mcp` -- Protected Resource Metadata (RFC 9728)
@@ -566,7 +564,7 @@ swarm-mcp --http --auth-mode apikey --host 127.0.0.1 --port 8766 \
 - `--public-url` must name the externally visible URL when behind a reverse proxy, so the
   DNS-rebinding Host check accepts the proxied Host header.
 
-A systemd user unit lives in `contrib/systemd/swarm-mcp-apikey.service`. Behind nginx,
+Run it under systemd or any process manager. Behind nginx,
 proxy a location to the loopback port with `proxy_http_version 1.1`, `proxy_buffering
 off` and a long `proxy_read_timeout` (SSE streams).
 
