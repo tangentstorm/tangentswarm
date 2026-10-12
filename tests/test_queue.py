@@ -101,6 +101,59 @@ def test_ttl_expiry(q):
 # ---------------------------------------------------------------------------
 # hub + client, over real HTTP
 
+class InterleaveDetector:
+    """Wraps the queue's sqlite connection and records when one thread runs a statement
+    while another thread's statements are still uncommitted. That is exactly the
+    expire/insert/commit interleaving the Queue lock must prevent."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.open_by = None
+        self.interleaved = 0
+        self.guard = threading.Lock()
+
+    def execute(self, *args):
+        me = threading.get_ident()
+        with self.guard:
+            if self.open_by not in (None, me):
+                self.interleaved += 1
+            self.open_by = me
+        time.sleep(0.0005)          # widen the window so a missing lock shows up every run
+        return self.conn.execute(*args)
+
+    def commit(self):
+        with self.guard:
+            self.open_by = None
+        return self.conn.commit()
+
+    def close(self):
+        return self.conn.close()
+
+
+def test_concurrent_sends_are_serialized(tmp_path):
+    q = Queue(str(tmp_path / 'hub.sqlite3'))
+    q.conn = InterleaveDetector(q.conn)
+    errors = []
+
+    def worker(n):
+        try:
+            for i in range(20):
+                q.send(f'agent-{n}', 'ops', 'status', f'{n}:{i}')
+        except Exception as e:          # pragma: no cover - reported below
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert errors == [] and q.conn.interleaved == 0
+    msgs = q.read('checker', since=0, limit=1000)
+    assert len(msgs) == 160 and len({m['id'] for m in msgs}) == 160
+    assert {m['body'] for m in msgs} == {f'{n}:{i}' for n in range(8) for i in range(20)}
+    q.close()
+
+
 @pytest.fixture
 def hub_url(tmp_path):
     db = str(tmp_path / 'hub.sqlite3')
@@ -148,3 +201,27 @@ def test_multiple_readers_independent_cursors_over_http(hub_url):
 def test_send_rejects_bad_type_over_http(hub_url):
     with pytest.raises(client.HubError):
         client.send_message('agent-1', 'bob', 'not-a-type', 'x', hub_url=hub_url)
+
+
+def test_concurrent_sends_over_http(hub_url):
+    errors, ids = [], []
+    lock = threading.Lock()
+
+    def worker(n):
+        try:
+            for i in range(15):
+                mid = client.send_message(f'agent-{n}', 'ops', 'status', f'{n}:{i}', hub_url=hub_url)['id']
+                with lock:
+                    ids.append(mid)
+        except Exception as e:          # pragma: no cover - reported below
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    assert errors == []
+    assert len(ids) == 150 and len(set(ids)) == 150
+    msgs = client.read_messages('checker', recipient='ops', since=0, limit=1000, hub_url=hub_url)
+    assert sorted(m['id'] for m in msgs) == sorted(ids)
