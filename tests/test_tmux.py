@@ -84,3 +84,40 @@ def test_new_window_argv(monkeypatch):
     argv = rec.calls[0]
     assert argv[:2] == ['tmux', 'new-window'] and '-d' in argv
     assert argv[argv.index('-t') + 1] == 'agents:' and argv[-1] == 'bash'
+
+
+def test_prefix_resolution_order(monkeypatch):
+    monkeypatch.setattr(tmux.subprocess, 'run', Recorder('C-a\n'))
+    monkeypatch.delenv(tmux.PREFIX_ENV, raising=False)
+    tmux.set_prefix(None)
+    assert tmux.prefix() == 'C-a'                      # live tmux server
+    monkeypatch.setenv(tmux.PREFIX_ENV, 'C-s')
+    assert tmux.prefix() == 'C-s'                      # env beats tmux
+    tmux.set_prefix('C-x')
+    try:
+        assert tmux.prefix() == 'C-x'                  # --tmux-prefix beats env
+    finally:
+        tmux.set_prefix(None)
+
+
+def test_prefix_defaults_to_c_r_without_tmux(monkeypatch):
+    monkeypatch.delenv(tmux.PREFIX_ENV, raising=False)
+    tmux.set_prefix(None)
+
+    def no_server(argv, **kw):
+        return subprocess.CompletedProcess(argv, 1, '', 'no server running')
+    monkeypatch.setattr(tmux.subprocess, 'run', no_server)
+    assert tmux.prefix() == 'C-r' == tmux.DEFAULT_PREFIX
+
+    def no_binary(argv, **kw):
+        raise FileNotFoundError('tmux')
+    monkeypatch.setattr(tmux.subprocess, 'run', no_binary)
+    assert tmux.prefix() == 'C-r'
+
+
+def test_is_ctrl_b():
+    for keys in ('C-b', 'c-b', ' ^B ', '^b'):
+        assert tmux.is_ctrl_b(keys) and not tmux.is_ctrl_b(keys, literal=True)
+    assert tmux.is_ctrl_b('\x02', literal=True) and tmux.is_ctrl_b('x\x02')
+    for keys in ('C-c', 'Escape', 'C-r', 'ctrl+b ctrl+b', 'C-b C-b'):
+        assert not tmux.is_ctrl_b(keys)

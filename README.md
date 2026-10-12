@@ -415,7 +415,7 @@ expose port 5002 or 5003.
 | `list_sessions` | read | tmux sessions: name, id, windows, attached, created |
 | `list_panes(target?, all?)` | read | panes: session, window index/name, pane index/id, active, command, path, size |
 | `capture_pane(target, history_lines?, escapes?)` | read | pane text (`-S -N` scrollback, `-e` escapes) |
-| `send_keys(target, text, enter=true, literal=true)` | shell | agent panes only: literal text, 0.5s, separate Enter; `literal=false` for key names |
+| `send_keys(target, text, enter=true, literal=true, allow_ctrl_b=false)` | shell | agent panes only: literal text, 0.5s, separate Enter; `literal=false` for key names; a lone C-b is refused (see below) |
 | `list_agents` | read | the registered agents: installed?, binary, exact argv, adapter level; the agent root |
 | `start_agent(agent, repo, branch, session="agents", window_name?)` | shell | start a registered agent (enum) in its own worktree `<root>/<repo>.<branch>` (see [One worktree per agent](#one-worktree-per-agent)) |
 | `list_worktrees(repo?)` | read | repos under the agent root and their worktrees: branch, dirty, on-layout, panes working in each |
@@ -468,6 +468,12 @@ with `TANGENTSWARM_AGENT_<NAME>=/abs/path`.
   foreground process group (`+` in the `ps` stat) is a registered agent. They refuse a
   bash prompt, a dead pane, or a shell whose agent was suspended with C-z. They then send
   keys to that pane id.
+- `send_keys` writes straight to the pane, so tmux's prefix key and bindings never fire,
+  whatever the prefix is. The `ctrl+b ctrl+b to run in background` hint on Claude Code's
+  screen is a Claude Code shortcut, not tmux, and agents that copy it off the screen would
+  background the target's running command. `send_keys` refuses C-b (as a key name, or a raw
+  0x02 byte) unless `allow_ctrl_b=true`. The refusal names the tmux prefix, taken from
+  `--tmux-prefix`, then `$TANGENTSWARM_TMUX_PREFIX`, then `tmux show -gv prefix`, then `C-r`.
 - Agent recognition looks at the process's comm, its argv[0] and, for node, bun and deno,
   the script name. It never looks at the rest of the command line, because prompts often
   mention other agents.

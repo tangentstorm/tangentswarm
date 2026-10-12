@@ -43,6 +43,9 @@ start_agent (see list_agents; every agent gets its own git worktree, see list_wo
 and remove_worktree), and talk to it with tell_agent or send_keys (literal text,
 then Enter after a 0.5s pause). Typing is only allowed into panes whose foreground process
 is a registered agent (claude, muse, grok, gemini, codex) -- never into a shell.
+send_keys goes straight to the pane, never through tmux's prefix or bindings. ctrl+b
+(Claude Code's "run in background") is a Claude Code key, not tmux's, and a lone C-b is
+refused unless allow_ctrl_b=true.
 Targets use tmux syntax: session, session:window, session:window.pane or %pane_id.
 cloud_* tools talk to Claude Code cloud sessions through the tangentswarm cloud hub
 (`swarm cloud serve`, ws://127.0.0.1:5002/ws). There are no kill tools and no
@@ -152,12 +155,22 @@ def capture_pane(target: str, history_lines: int | None = None, escapes: bool = 
 
 
 @_scoped(SCOPE_SHELL)
-async def send_keys(target: str, text: str, enter: bool = True, literal: bool = True) -> dict:
+async def send_keys(target: str, text: str, enter: bool = True, literal: bool = True,
+                    allow_ctrl_b: bool = False) -> dict:
     """Type into a coding agent's pane. Refused unless the pane's foreground process is a
     registered agent, so it never types into a shell. literal=true (the default) sends the
     text verbatim with send-keys -l, then, if enter is set, waits 0.5s and presses Enter in
-    a separate call. literal=false passes `text` as tmux key names, such as 'C-c', 'Escape'
-    or 'Up'."""
+    a separate call. literal=false passes `text` as one tmux key name, such as 'C-c',
+    'Escape' or 'Up'.
+
+    Keys go straight to the agent, never through tmux's prefix or key bindings. The
+    'ctrl+b ctrl+b to run in background' hint on Claude Code's screen is a Claude Code
+    shortcut, not tmux; C-b is refused unless allow_ctrl_b=true."""
+    if tmux.is_ctrl_b(text, literal=literal) and not allow_ctrl_b:
+        raise ToolError(
+            "refusing to send C-b: ctrl+b is Claude Code's 'run in background' key, not tmux's "
+            f"(the tmux prefix here is {tmux.prefix()}, and send_keys bypasses it anyway). "
+            "Pass allow_ctrl_b=true if you really mean to background the agent's running command.")
     def run():
         pane = agents.require_agent_pane(target)
         pid = pane['pane_id']
@@ -471,7 +484,12 @@ def main(argv=None):
                          'mode 600, without printing it; then exit')
     ap.add_argument('--issuer', help='external authorization server issuer URL')
     ap.add_argument('--audience', help='expected token audience (default: the resource URL)')
+    ap.add_argument('--tmux-prefix', metavar='KEY',
+                    help=f'tmux prefix key to report to agents (default: ${tmux.PREFIX_ENV}, '
+                         f'then `tmux show -gv prefix`, then {tmux.DEFAULT_PREFIX})')
     a = ap.parse_args(argv)
+    if a.tmux_prefix:
+        tmux.set_prefix(a.tmux_prefix)
 
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
     if a.gen_api_key is not None:
