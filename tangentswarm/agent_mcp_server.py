@@ -273,9 +273,12 @@ def build_http_app(host='127.0.0.1', port=DEFAULT_PORT, path=DEFAULT_PATH, overr
 
     The resource URL is this server's own (--public-url, $TANGENTSWARM_AGENT_PUBLIC_URL, or
     http://host:port/path), never swarm-mcp's from the shared mcp-auth.yaml. In external
-    mode the issuer defaults to the origin of that URL, which is where a swarm-mcp running
-    the builtin authorization server on the same host answers."""
+    mode, however it was selected (--auth-mode, $TANGENTSWARM_AUTH_MODE or mcp-auth.yaml),
+    the issuer defaults to the origin of that URL, which is where a swarm-mcp running the
+    builtin authorization server on the same host answers. An issuer set explicitly
+    (--issuer, $TANGENTSWARM_AUTH_ISSUER or mcp-auth.yaml) wins."""
     from .http_app import build_http_app as build
+    from .http_app import configured, resolve_mode
 
     global API_KEY_MODE
     overrides = dict(overrides or {})
@@ -283,7 +286,9 @@ def build_http_app(host='127.0.0.1', port=DEFAULT_PORT, path=DEFAULT_PATH, overr
         or f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}{path}"
     overrides['resource_url'] = resource
     overrides['audience'] = overrides.get('audience') or resource
-    if overrides.get('mode') == 'external' and not overrides.get('issuer_url'):
+    if resolve_mode(http_profile(), overrides) == 'external' and not (
+            overrides.get('issuer_url') or os.environ.get('TANGENTSWARM_AUTH_ISSUER')
+            or configured('issuer_url')):
         u = urlsplit(resource)
         overrides['issuer_url'] = f'{u.scheme}://{u.netloc}'
     app, cfg, provider = build(http_profile(), host, port, path, overrides)

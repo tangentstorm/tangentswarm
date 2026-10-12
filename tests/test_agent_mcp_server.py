@@ -231,6 +231,32 @@ def test_resource_url_ignores_swarm_mcp_config(monkeypatch):
     assert cfg.required_scopes == [A.SCOPE_AGENT]
 
 
+
+@pytest.mark.parametrize('source', ['env', 'yaml'])
+def test_external_mode_from_env_or_config_derives_issuer(source, monkeypatch):
+    # external selected without --auth-mode still gets the issuer from the public URL's origin
+    if source == 'env':
+        monkeypatch.setenv('TANGENTSWARM_AUTH_MODE', 'external')
+    else:
+        A.config_file().parent.mkdir(parents=True, exist_ok=True)
+        A.config_file().write_text('mode: external\n')
+    _, cfg, _ = S.build_http_app('127.0.0.1', 1, S.DEFAULT_PATH,
+                                 {'resource_url': 'https://swarm.example/mcp/agent'})
+    assert cfg.mode == 'external' and cfg.issuer_url == 'https://swarm.example'
+
+
+def test_explicit_issuer_from_env_or_config_wins(monkeypatch):
+    A.config_file().parent.mkdir(parents=True, exist_ok=True)
+    A.config_file().write_text('mode: external\nissuer_url: https://idp.example\n')
+    _, cfg, _ = S.build_http_app('127.0.0.1', 1, S.DEFAULT_PATH,
+                                 {'resource_url': 'https://swarm.example/mcp/agent'})
+    assert cfg.issuer_url == 'https://idp.example'
+    monkeypatch.setenv('TANGENTSWARM_AUTH_ISSUER', 'https://idp2.example')
+    _, cfg, _ = S.build_http_app('127.0.0.1', 1, S.DEFAULT_PATH,
+                                 {'resource_url': 'https://swarm.example/mcp/agent'})
+    assert cfg.issuer_url == 'https://idp2.example'
+
+
 # ---------------------------------------------------------------------------
 # OAuth: swarm-mcp's builtin authorization server issues, swarm-agent accepts
 

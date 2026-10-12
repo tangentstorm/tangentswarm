@@ -46,16 +46,36 @@ class HttpProfile:
                     and os.path.exists(os.path.expanduser(self.default_key_file)))
 
 
+def configured(key):
+    """A setting from the shared ~/.config/tangentswarm/mcp-auth.yaml, or None."""
+    import yaml
+    cf = A.config_file()
+    if not cf.exists():
+        return None
+    return (yaml.safe_load(cf.read_text()) or {}).get(key)
+
+
+def resolve_mode(profile: HttpProfile, overrides):
+    """The auth mode build_http_app will use: --auth-mode, then $TANGENTSWARM_AUTH_MODE,
+    then apikey if a key is configured, then mcp-auth.yaml, then builtin."""
+    overrides = overrides or {}
+    if overrides.get('mode'):
+        return overrides['mode']
+    if os.environ.get('TANGENTSWARM_AUTH_MODE'):
+        return os.environ['TANGENTSWARM_AUTH_MODE']
+    if overrides.get('api_key_file') or profile.key_configured():
+        return 'apikey'     # configuring a key selects apikey mode
+    return configured('mode') or 'builtin'
+
+
 def build_http_app(profile: HttpProfile, host='127.0.0.1', port=8765, path='/mcp', overrides=None):
     """Build the ASGI app for Streamable HTTP. Returns (app, config, provider)."""
     from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
     from mcp.server.transport_security import TransportSecuritySettings
 
     overrides = dict(overrides or {})
+    overrides['mode'] = resolve_mode(profile, overrides)
     api_key_file = overrides.pop('api_key_file', None)
-    if not overrides.get('mode') and not os.environ.get('TANGENTSWARM_AUTH_MODE') \
-            and (api_key_file or profile.key_configured()):
-        overrides['mode'] = 'apikey'       # configuring a key selects apikey mode
     if profile.required_scopes is not None:
         overrides['required_scopes'] = list(profile.required_scopes)
     cfg = A.load_auth_config(host, port, path, overrides)
