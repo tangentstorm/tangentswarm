@@ -28,11 +28,13 @@ pip install '.[cloud]'            # optional: Claude Code cloud sessions (Playwr
 playwright install chromium       # ...plus a browser for the cloud extra
 ```
 
-This installs two commands:
+This installs four commands:
 
 - `swarm`, the branch and tmux launcher described below, plus the agent tools ported
   from scialect (see [Agents and the swarm state machine](#agents-and-the-swarm-state-machine)).
 - `swarm-mcp`, an MCP server for tmux, agents and cloud sessions (see [MCP server](#mcp-server)).
+- `swarm-hub`, the message queue agents report to, and `swarm-agent`, the MCP server agents
+  use to reach it (see [swarm-agent](#swarm-agent-the-agents-own-mcp-server)).
 
 ## Usage
 
@@ -266,6 +268,9 @@ tangentswarm/
   git.py           git helpers
   worktrees.py     one worktree per agent: layout, sync, .swarm.yaml, spawn/list/remove
   mcp_server.py    swarm-mcp (stdio, or Streamable HTTP with OAuth or an API key)
+  agent_mcp_server.py  swarm-agent: agents' message tools (stdio, or one shared HTTP server)
+  http_app.py      Streamable HTTP app + auth wiring shared by swarm-mcp and swarm-agent
+  queue/           swarm-hub: SQLite message queue, its HTTP server and client
   auth.py          OAuth resource server + optional built-in authorization server
   auth_cli.py      swarm auth ...
   agents.py        agent detection, prompt-empty detection, space probe, tell/wait
@@ -659,6 +664,71 @@ By default the server listens only on loopback. To expose it:
    The `issuer_url` must use https. In builtin mode it defaults to `https://swarm.example.com`.
 3. Set an admin password with `swarm auth set-password`, or switch to an external issuer.
 4. Give clients that don't need to type into panes only `tangentswarm:read`.
+
+## swarm-agent: the agents' own MCP server
+
+`swarm-mcp` controls agents. `swarm-agent` lets them talk back: it puts status, blocker,
+question and done messages on the `swarm-hub` queue, and lets an agent read messages
+addressed to it. It has no tmux, filesystem or shell tools.
+
+Run it once, as a shared Streamable HTTP server that every agent (local, cloud, other
+machines) connects to:
+
+```sh
+swarm-hub                                  # queue on http://127.0.0.1:8777 (no auth: loopback only)
+swarm-agent --gen-api-key                  # ~/.config/tangentswarm/agent_api_key (0600)
+swarm-agent --http --host 127.0.0.1 --port 8768 --path /mcp/agent \
+            --public-url https://swarm.example.com/mcp/agent
+```
+
+`swarm-agent` with no `--http` still serves stdio, one process per agent.
+
+### Tools and agent identity
+
+| tool | what it does |
+|------|--------------|
+| `register_agent(name)` | binds this MCP session to an agent name |
+| `whoami()` | the bound name and the credential it authenticated with |
+| `send_message(recipient, type, body, context?)` | posts to the hub, signed with the bound name |
+| `read_messages(since?, limit?)` | new messages addressed to you; moves your read cursor |
+
+One server serves many agents, so each MCP session (`Mcp-Session-Id`) is bound to an
+agent name, taken from the first of: `register_agent(name)`, an `X-Swarm-Agent: <name>`
+request header, or `send_message`'s legacy `sender` argument. Once bound, a session
+cannot change its name. The header is the most robust choice, because the binding lives
+in memory and a re-initialized session (after a server restart, say) re-binds from it:
+
+```sh
+claude mcp add --transport http swarm-agent https://swarm.example.com/mcp/agent \
+  --header "Authorization: Bearer $(cat ~/.config/tangentswarm/agent_api_key)" \
+  --header "X-Swarm-Agent: myrepo/my-branch"
+```
+
+Clients that cannot set headers (claude.ai connectors) call `register_agent` first; the
+server instructions tell them to. Names are self-declared: anyone with a valid
+credential is trusted to say who they are. Every send is logged to stderr with the name
+and the credential (`apikey` or `oauth:<client_id>`).
+
+### Auth
+
+The same modes as swarm-mcp, with credentials that are separate in both directions:
+
+- `apikey` (selected automatically when a key is configured): the key comes from
+  `--api-key-file`, `$TANGENTSWARM_AGENT_API_KEY`, `$TANGENTSWARM_AGENT_API_KEY_FILE` or
+  `~/.config/tangentswarm/agent_api_key`. swarm-mcp's key is never read, and the agent
+  key opens nothing on swarm-mcp, so agents never hold a key that can type into panes.
+- `external`: swarm-agent is a resource server only. With no `--issuer`, the issuer is
+  the origin of `--public-url`, which is where a swarm-mcp in builtin mode on the same
+  host already runs its authorization server; their tokens share the store in
+  `~/.local/state/tangentswarm/auth.db`. Tokens must carry the `tangentswarm:agent`
+  scope and be issued for swarm-agent's exact resource URL, so swarm-mcp tokens are
+  refused here and agent tokens are refused there. MCP clients find all this through
+  `/.well-known/oauth-protected-resource/mcp/agent`. For headless agents, use
+  `swarm auth token issue --client <agent> --scopes tangentswarm:agent`, or a
+  client_credentials client with `resource=<swarm-agent URL>` in the token request.
+- `builtin`: swarm-agent runs its own authorization server, issuing only
+  `tangentswarm:agent`. Use this only when it has an origin to itself, because the
+  authorization server routes live at the origin root.
 
 ## License
 

@@ -27,7 +27,6 @@ import argparse
 import functools
 import inspect
 import logging
-import os
 import sys
 
 import anyio
@@ -373,83 +372,35 @@ def build_server(**kwargs):
 # ---------------------------------------------------------------------------
 # HTTP mode
 
+def http_profile():
+    from .http_app import HttpProfile
+    return HttpProfile(name='swarm-mcp', build_server=build_server, required_scopes=None)
+
+
 def build_http_app(host='127.0.0.1', port=8765, path='/mcp', overrides=None):
     """Build the ASGI app for Streamable HTTP (OAuth, or a static API key in mode 'apikey').
     Returns (app, config, provider)."""
-    from urllib.parse import urlsplit
-
-    from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
-    from mcp.server.transport_security import TransportSecuritySettings
-
-    from . import apikey as K
-    from . import auth as A
+    from .http_app import build_http_app as build
 
     global AUTH_ENFORCED, API_KEY_MODE
-    overrides = dict(overrides or {})
-    api_key_file = overrides.pop('api_key_file', None)
-    if not overrides.get('mode') and not os.environ.get('TANGENTSWARM_AUTH_MODE') \
-            and (api_key_file or K.key_configured()):
-        overrides['mode'] = 'apikey'       # configuring a key selects apikey mode
-    cfg = A.load_auth_config(host, port, path, overrides)
-    if api_key_file and cfg.mode != 'apikey':
-        raise K.ApiKeyError(f'--api-key-file only applies to --auth-mode apikey (mode is {cfg.mode})')
-    provider = None
-    api_key = None
-    if cfg.mode == 'apikey':
-        api_key, cfg.api_key_source = K.load_api_key(api_key_file)   # refuses to start without one
-        cfg.api_key_fingerprint = K.fingerprint(api_key)
-        server = build_server()
-        AUTH_ENFORCED = False       # the key gate below authenticates; a valid key has all scopes
-        API_KEY_MODE = True
-    elif cfg.mode == 'builtin':
-        provider = A.BuiltinProvider(cfg)
-        settings = AuthSettings(
-            issuer_url=cfg.issuer_url, resource_server_url=cfg.resource_url,
-            required_scopes=cfg.required_scopes, validate_token_resource=True,
-            client_registration_options=ClientRegistrationOptions(
-                enabled=True, valid_scopes=A.ALL_SCOPES, default_scopes=A.ALL_SCOPES),
-            revocation_options=RevocationOptions(enabled=True))
-        server = build_server(auth=settings, auth_server_provider=provider)
-    else:
-        settings = AuthSettings(issuer_url=cfg.issuer_url, resource_server_url=cfg.resource_url,
-                                required_scopes=cfg.required_scopes, validate_token_resource=False)
-        server = build_server(auth=settings, token_verifier=A.ExternalTokenVerifier(cfg))
-    if api_key is None:
-        AUTH_ENFORCED = True
-        API_KEY_MODE = False
-
-    allowed_hosts = ['127.0.0.1:*', 'localhost:*', '[::1]:*']
-    allowed_origins = ['http://127.0.0.1:*', 'http://localhost:*', 'http://[::1]:*']
-    pub = urlsplit(cfg.resource_url)
-    if pub.hostname not in ('127.0.0.1', 'localhost', '::1'):
-        allowed_hosts += [pub.netloc, pub.hostname]
-        allowed_origins += [f"{pub.scheme}://{pub.netloc}"]
-    security = TransportSecuritySettings(enable_dns_rebinding_protection=True,
-                                         allowed_hosts=allowed_hosts, allowed_origins=allowed_origins)
-    app = server.streamable_http_app(streamable_http_path=path, host=host, transport_security=security)
-    if provider is not None:
-        # /token (adds client_credentials, delegating other grants to the SDK) and /login
-        app.router.routes[0:0] = A.make_extra_routes(provider)
-    if api_key is not None:
-        # outermost layer, so a request without the key reaches nothing
-        app = K.ApiKeyMiddleware(app, api_key)
+    app, cfg, provider = build(http_profile(), host, port, path, overrides)
+    # in apikey mode the key gate authenticates, and a valid key has all scopes
+    API_KEY_MODE = cfg.mode == 'apikey'
+    AUTH_ENFORCED = not API_KEY_MODE
     return app, cfg, provider
 
 
 def run_http(host, port, path, overrides):
     import uvicorn
     from .apikey import ApiKeyError
+    from .http_app import describe
     try:
         app, cfg, _ = build_http_app(host, port, path, overrides)
     except ApiKeyError as e:
         print(f"[tangentswarm] refusing to start: {e}", file=sys.stderr, flush=True)
         sys.exit(2)
-    if cfg.mode == 'apikey':
-        detail = f"key={cfg.api_key_source} {cfg.api_key_fingerprint}"
-    else:
-        detail = f"issuer={cfg.issuer_url}"
     print(f"[tangentswarm] swarm-mcp HTTP on http://{host}:{port}{path} "
-          f"(auth={cfg.mode}, {detail}, resource={cfg.resource_url})",
+          f"({describe(cfg)}, resource={cfg.resource_url})",
           file=sys.stderr, flush=True)
     uvicorn.run(app, host=host, port=port, log_level='info')
 

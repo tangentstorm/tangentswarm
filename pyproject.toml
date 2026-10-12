@@ -22,9 +22,11 @@ test = ["pytest", "websockets>=13"]
 [project.scripts]
 swarm = "tangentswarm.cli:main"
 swarm-mcp = "tangentswarm.mcp_server:main"
+swarm-hub = "tangentswarm.queue.hub:main"
+swarm-agent = "tangentswarm.agent_mcp_server:main"
 
 [tool.setuptools]
-packages = ["tangentswarm", "tangentswarm.cloud"]
+packages = ["tangentswarm", "tangentswarm.cloud", "tangentswarm.queue"]
 
 [tool.setuptools.dynamic]
 version = { attr = "tangentswarm.__version__" }
