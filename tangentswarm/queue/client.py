@@ -1,5 +1,5 @@
 """Thin HTTP client for the hub (tangentswarm.queue.hub), used by the
-agent-side MCP server (tangentswarm/queue_mcp_server.py) and by anything
+agent-side MCP server (tangentswarm/agent_mcp_server.py) and by anything
 else -- a human's CLI, a bot -- that wants to read or write the queue.
 """
 import json

@@ -6,6 +6,7 @@ between agents and their operator.
     tangentswarm.queue.hub     HTTP server wrapping a Queue (`swarm-hub`)
     tangentswarm.queue.client  thin HTTP client used by the hub's consumers
 
-See tangentswarm/queue_mcp_server.py for the agent-side MCP tool
-(send_message) that POSTs to the hub.
+See tangentswarm/agent_mcp_server.py (`swarm-agent`) for the agent-side MCP
+tools (send_message, read_messages) that talk to the hub, over stdio or as one
+shared HTTP server for every agent.
 """
