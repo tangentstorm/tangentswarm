@@ -294,7 +294,7 @@ def test_agent_status_typed_prefix_plus_suggestion(monkeypatch):
 @pytest.mark.parametrize('body, typed', [
     (['', '  second line typed'], '\nsecond line typed'),          # blank ❯ line, real continuation
     (['first', '  second'], 'first\nsecond'),
-    (['first', '\x1b[2m  ghost on line two\x1b[0m'], 'first'),
+    (['first', '\x1b[2m  ghost on line two\x1b[0m'], 'first\n'),   # the line stays, its ghost doesn't
 ])
 def test_multiline_continuation_counts(monkeypatch, body, typed):
     raw = box(*body)
@@ -306,7 +306,9 @@ def test_multiline_continuation_counts(monkeypatch, body, typed):
 def test_blank_prompt_with_empty_continuation_is_blank(monkeypatch):
     raw = box('', '   ')
     assert agents.claude_prompt_blank(agents.input_view(raw))
-    assert status_of(monkeypatch, raw)['prompt'] == {'input': '', 'suggestion': None, 'blank': True}
+    prompt = status_of(monkeypatch, raw)['prompt']
+    assert prompt['blank'] is True and prompt['suggestion'] is None
+    assert prompt['input'] == '\n '          # two lines; the 2-column continuation indent removed
 
 
 @pytest.mark.parametrize('body, typed', [
@@ -326,6 +328,56 @@ def test_unfamiliar_styles_are_kept_as_input(monkeypatch, sgr):
     st = status_of(monkeypatch, box(f'\x1b[{sgr}mmerge it into work\x1b[0m'))
     assert st['prompt'] == {'input': 'merge it into work', 'suggestion': None, 'blank': False}
     assert st['prompt_blank'] is False
+
+
+@pytest.mark.parametrize('body, typed', [
+    (['  indented first line'], '  indented first line'),              # only the ❯ separator goes
+    (['def f():', '      return 1'], 'def f():\n    return 1'),       # 2-col UI indent off, 4 kept
+    (['a  b   c'], 'a  b   c'),
+    (['tab\there'], 'tab\there'),
+    (['one', '', '  three'], 'one\n\nthree'),                         # an empty middle line stays
+])
+def test_typed_whitespace_and_lines_are_preserved(monkeypatch, body, typed):
+    st = status_of(monkeypatch, box(*body))
+    assert st['prompt'] == {'input': typed, 'suggestion': None, 'blank': False}
+
+
+def test_typed_space_before_a_suggestion_stays_typed(monkeypatch):
+    st = status_of(monkeypatch, box('merge \x1b[2mit into work\x1b[0m'))
+    assert st['prompt'] == {'input': 'merge ', 'suggestion': 'it into work', 'blank': False}
+    assert '❯\xa0merge [ghost suggestion, not typed: it into work]' in st['last_lines']
+
+
+@pytest.mark.parametrize('glyph', ['>', '›', '❯', '─', '│', '╭'])
+def test_dim_run_with_a_kept_glyph_is_not_a_suggestion(monkeypatch, glyph):
+    # input_view() keeps prompt glyphs and box drawing even when dim, so the prompt reads
+    # as not blank; the run can't be told apart from input, so none of it is a suggestion
+    text = f'compare the left {glyph} right side'
+    raw = box(f'\x1b[2m{text}\x1b[0m')
+    st = status_of(monkeypatch, raw)
+    assert st['prompt_blank'] is False
+    assert st['prompt'] == {'input': text, 'suggestion': None, 'blank': False}
+    assert not any('ghost suggestion' in l for l in st['last_lines'])
+
+
+def test_dim_runs_split_by_a_plain_space_are_one_suggestion(monkeypatch):
+    st = status_of(monkeypatch, box('\x1b[2mmerge\x1b[0m \x1b[2mit\x1b[0m'))
+    assert st['prompt_blank'] is True
+    assert st['prompt'] == {'input': '', 'suggestion': 'merge it', 'blank': True}
+
+
+@pytest.mark.parametrize('body', [
+    [''], ['typed'], ['\x1b[2mghost\x1b[0m'], ['merge\x1b[2m it into work\x1b[0m'],
+    ['\x1b[2ma > b\x1b[0m'], ['\x1b[2ma >\x1b[0m'], ['\x1b[2m>\x1b[0m'], ['x\x1b[2m >\x1b[0m'],
+    ['\x1b[2mgrey\x1b[0m then typed'], ['\x1b[2mmerge\x1b[0m \x1b[2mit\x1b[0m'],
+    ['', '  next'], ['', '\x1b[2m  ghost\x1b[0m'], ['', '\x1b[2m  a │ b\x1b[0m'],
+    ['\x1b[38;5;244mgrey 256\x1b[39m'], ['\x1b[90mbright black\x1b[39m'], ['\x1b[3mitalic\x1b[0m'],
+    ['  \x1b[2m  spaced ghost  \x1b[0m  '],
+])
+def test_prompt_blank_and_prompt_agree(monkeypatch, body):
+    raw = box(*body)
+    st = status_of(monkeypatch, raw)
+    assert st['prompt']['blank'] == st['prompt_blank'] == agents.claude_prompt_blank(agents.input_view(raw))
 
 
 def test_unrelated_dim_output_is_not_relabelled_or_erased(monkeypatch):

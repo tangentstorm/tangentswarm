@@ -220,46 +220,69 @@ def claude_prompt(raw):
     """Read Claude Code's (or Muse's) input box from an escape-coded capture.
 
     Returns {'input', 'suggestion', 'blank', 'lines'} or None if there is no ❯ box.
-    'input' is the text drawn in normal colours after the ❯, continuation lines included.
-    'suggestion' is the positively identified ghost text: the trailing run of each input
-    line that is drawn dim or grey (the same styles input_view() blanks), or None.
-    Anything else, including unfamiliar styles and hint-styled text with typed text after
-    it, stays in 'input', so 'blank' agrees with claude_prompt_blank(input_view(raw)).
-    'lines' is the plain screen with each suggestion run wrapped in SUGGESTION_LABEL;
-    nothing outside the input box is changed."""
-    plain, hints = [], []
+
+    'input' is the text on the input lines with Claude's own padding removed and nothing
+    else: one separator character after the ❯, and on continuation lines the indent that
+    lines them up under it (pos(❯) + 2 columns). Typed indentation, inner and trailing
+    spaces, and the line structure (one line per box line, blank ones included) are kept.
+    tmux trims blanks at the end of a captured line, so trailing spaces typed at a line
+    end may already be gone; 'input' is what the screen shows, not a keystroke log.
+
+    'suggestion' is the positively identified ghost text, or None: on each input line,
+    the trailing run (blanks aside) of characters that input_view() would blank, i.e.
+    drawn dim or grey and not a prompt glyph or box-drawing character. Blanks in the
+    normal style just before the run stay in 'input'; dim/grey blanks belong to the run. If that run
+    touches a dim/grey glyph that input_view() keeps (say a dim 'a > b'), it cannot be
+    told apart from input, so nothing on that line is called a suggestion. Everything that
+    is not a suggestion, including unfamiliar styles and hint-styled text with typed text
+    after it, stays in 'input'. So 'blank' (input has only blanks) always agrees with
+    claude_prompt_blank(input_view(raw)), and errs toward not blank.
+
+    'lines' is the plain screen with each suggestion wrapped in SUGGESTION_LABEL; nothing
+    outside the input box is changed."""
+    plain, styled, masked = [], [], []
     for chunk, hint in _segments(raw):
         plain.append(chunk)
-        hints.extend([hint] * len(chunk))
+        styled.extend([hint] * len(chunk))
+        masked.extend(hint and c not in _KEEP for c in chunk)   # what input_view() blanks
     plain = ''.join(plain)
-    lines, masks, at = [], [], 0
+    lines, rows, at = [], [], 0
     for line in plain.split('\n'):
         lines.append(line)
-        masks.append(hints[at:at + len(line)])
+        rows.append((styled[at:at + len(line)], masked[at:at + len(line)]))
         at += len(line) + 1
     region = _claude_input_region(lines)
     if region is None:
         return None
     first, end = region
+    glyph = lines[first].find('❯')
     typed, ghosts = [], []
     for i in range(first, end):
-        line, mask = lines[i], masks[i]
-        start = line.find('❯') + 1 if i == first else 0
+        line, (style, mask) = lines[i], rows[i]
+        if i == first:                       # one separator after the ❯
+            start = glyph + 1
+            if start < len(line) and line[start].isspace():
+                start += 1
+        else:                                # continuation indent under the ❯ text
+            start = 0
+            while start < min(len(line), glyph + 2) and line[start].isspace():
+                start += 1
         stop = len(line.rstrip())
         cut = stop
         while cut > start and (mask[cut - 1] or line[cut - 1].isspace()):
             cut -= 1
-        while cut < stop and line[cut].isspace():
+        # stopped on a dim/grey glyph that input_view() keeps: can't tell, so no suggestion
+        ambiguous = cut > start and style[cut - 1]
+        while cut < stop and line[cut].isspace() and not style[cut]:   # plain blanks stay typed
             cut += 1
-        ghost = line[cut:stop]
-        if ghost and any(mask[cut:stop]):
+        ghost = line[cut:stop].lstrip()
+        if ghost and not ambiguous:
             ghosts.append(ghost)
-            lines[i] = line[:cut] + SUGGESTION_LABEL.format(ghost) + line[stop:]
+            lead = stop - cut - len(ghost)
+            lines[i] = line[:cut + lead] + SUGGESTION_LABEL.format(ghost) + line[stop:]
+            typed.append(line[start:cut])
         else:
-            cut = stop
-        typed.append(line[start:cut].strip())
-    while typed and not typed[-1]:
-        typed.pop()
+            typed.append(line[start:])
     text = '\n'.join(typed)
     return {'input': text, 'suggestion': ' '.join(ghosts) or None,
             'blank': text.strip() == '', 'lines': lines}

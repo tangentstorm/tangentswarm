@@ -476,9 +476,12 @@ with `TANGENTSWARM_AGENT_<NAME>=/abs/path`.
   normal colour counts as real input.
 - Screen text is not prompt state. Plain text (`capture_pane`, `last_lines`) loses the
   styling, so Claude's dim autocomplete suggestion after an empty `❯` looks like typed
-  input. For claude and muse, `agent_status.prompt` separates `input` (normal colours,
-  continuation lines included) from `suggestion` (the trailing dim/grey run of an input
-  line), and `last_lines` wraps that run as `[ghost suggestion, not typed: ...]`. Nothing
+  input. For claude and muse, `agent_status.prompt` separates `input` from `suggestion`
+  (the trailing dim/grey run of an input line). `input` drops only Claude's padding (the
+  separator after `❯`, the continuation indent) and keeps typed spaces and line breaks;
+  tmux trims blanks at a line end. A dim run next to a dim prompt glyph or box character
+  stays in `input`, because `input_view` keeps those glyphs and the prompt is then not
+  blank. `last_lines` wraps that run as `[ghost suggestion, not typed: ...]`. Nothing
   outside the input box is relabelled or erased, and text in unfamiliar styles counts as
   input. `tell_agent` still refuses to type over real input.
 
