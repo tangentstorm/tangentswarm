@@ -287,8 +287,10 @@ async def agent_status(target: str) -> dict:
     lines. Read-only.
 
     prompt_blank and, for claude and muse, `prompt` ({input, suggestion, blank}) are the
-    interpreted prompt: `input` is what is typed, `suggestion` is grey/dim ghost text the
-    agent drew that is not typed. last_lines is the screen as drawn, for diagnostics, with
+    interpreted prompt: `input` is the typed text as the screen shows it (Claude's prompt
+    padding removed, typed spaces and line breaks kept; tmux drops blanks at a line end),
+    `suggestion` is grey/dim ghost text the agent drew that is not typed. When a dim run
+    can't be told apart from input, it stays in `input`, so `blank` errs toward false. last_lines is the screen as drawn, for diagnostics, with
     a recognised suggestion in the prompt box wrapped as
     '[ghost suggestion, not typed: ...]'; do not read typed input from it."""
     try:
