@@ -414,13 +414,13 @@ expose port 5002 or 5003.
 | --- | --- | --- |
 | `list_sessions` | read | tmux sessions: name, id, windows, attached, created |
 | `list_panes(target?, all?)` | read | panes: session, window index/name, pane index/id, active, command, path, size |
-| `capture_pane(target, history_lines?, escapes?)` | read | pane text (`-S -N` scrollback, `-e` escapes) |
+| `capture_pane(target, history_lines?, escapes?)` | read | raw pane text (`-S -N` scrollback, `-e` escapes); diagnostic, not evidence of typed input |
 | `send_keys(target, text, enter=true, literal=true)` | shell | agent panes only: literal text, 0.5s, separate Enter; `literal=false` for key names |
 | `list_agents` | read | the registered agents: installed?, binary, exact argv, adapter level; the agent root |
 | `start_agent(agent, repo, branch, session="agents", window_name?)` | shell | start a registered agent (enum) in its own worktree `<root>/<repo>.<branch>` (see [One worktree per agent](#one-worktree-per-agent)) |
 | `list_worktrees(repo?)` | read | repos under the agent root and their worktrees: branch, dirty, on-layout, panes working in each |
 | `remove_worktree(repo, branch, delete_branch=false)` | shell | remove a clean, unused worktree; delete the branch only if merged |
-| `agent_status(target)` | read | registered agent in the pane's foreground, typeable?, prompt blank?, last lines |
+| `agent_status(target)` | read | registered agent in the pane's foreground, typeable?, prompt blank?, `prompt` (typed `input` vs ghost `suggestion`), last lines |
 | `pane_ready(target, probe=false)` | read (probe: shell) | is the agent's prompt empty |
 | `wait_for_idle(target, timeout_sec=120, poll_ms, settle_sec)` | read | screen stable + prompt blank |
 | `tell_agent(target, text, new_conversation?, require_empty_prompt=true)` | shell | agent panes only: tell-worker send sequence |
@@ -474,6 +474,16 @@ with `TANGENTSWARM_AGENT_<NAME>=/abs/path`.
 - Prompt detection uses an escape-coded capture. Text drawn dim or in grey (Claude's
   prompt suggestions, Muse's placeholder) counts as an empty prompt, and text in the
   normal colour counts as real input.
+- Screen text is not prompt state. Plain text (`capture_pane`, `last_lines`) loses the
+  styling, so Claude's dim autocomplete suggestion after an empty `❯` looks like typed
+  input. For claude and muse, `agent_status.prompt` separates `input` from `suggestion`
+  (the trailing dim/grey run of an input line). `input` drops only Claude's padding (the
+  separator after `❯`, the continuation indent) and keeps typed spaces and line breaks;
+  tmux trims blanks at a line end. A dim run next to a dim prompt glyph or box character
+  stays in `input`, because `input_view` keeps those glyphs and the prompt is then not
+  blank. `last_lines` wraps that run as `[ghost suggestion, not typed: ...]`. Nothing
+  outside the input box is relabelled or erased, and text in unfamiliar styles counts as
+  input. `tell_agent` still refuses to type over real input.
 
 The guard does not stop the agents themselves from running commands. You can use
 Claude's `!` bash mode or ask an agent to run something, and `send_keys` can answer

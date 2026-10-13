@@ -243,6 +243,185 @@ def test_claude_dim_suggestion_reads_as_blank():
     assert not agents.claude_prompt_blank(agents.input_view(typed))
 
 
+GHOST = "check PR #6 on github to confirm it's updated"
+BAR = '\x1b[38;5;244m' + '─' * 60 + '\n\x1b[39m'
+GREY_OUTPUT = '\x1b[2m  ⎿  Read 3 files (ctrl+o to expand)\x1b[0m\n'
+
+
+def box(*body):
+    """An escape-coded Claude screen: grey output above, then the ❯ input box and footer."""
+    return ('● Done.\n' + GREY_OUTPUT + BAR + '❯\xa0' + '\n'.join(body) + '\n' + BAR +
+            '  \x1b[38;5;246m? for shortcuts\x1b[39m\n')
+
+
+def status_of(monkeypatch, raw, agent='claude'):
+    """agents.agent_status() on a canned capture, without tmux."""
+    monkeypatch.setattr(agents, 'pane_agent', lambda t: {'pane_id': '%10', 'agent': agent})
+    monkeypatch.setattr(tmux, 'capture_pane', lambda t, escapes=False: raw)
+    monkeypatch.setattr(tmux, 'list_panes', lambda t: [{'pane_id': '%10', 'current_command': agent}])
+    return agents.agent_status('agents:2')
+
+
+def test_agent_status_labels_the_fixture_suggestion(monkeypatch):
+    raw = (FIX / 'claude_suggestion.ansi').read_text()
+    st = status_of(monkeypatch, raw)
+    assert st['prompt_blank'] is True
+    assert st['prompt'] == {'input': '', 'suggestion': GHOST, 'blank': True}
+    (line,) = [l for l in st['last_lines'] if '❯' in l]
+    assert line.endswith(agents.SUGGESTION_LABEL.format(GHOST))
+    assert 'not evidence of typed input' in st['screen_note']
+    # the grey hint line above the box is unrelated output and stays as drawn
+    assert any(l.strip() == 'new task? /clear to save 150.9k tokens' for l in st['last_lines'])
+    assert st['screen_sha256'] == agents.screen_hash(agents.strip_ansi(raw))   # raw hash unchanged
+
+
+def test_agent_status_identical_text_typed_is_input(monkeypatch):
+    raw = (FIX / 'claude_suggestion.ansi').read_text().replace('\x1b[2mcheck PR', 'check PR')
+    st = status_of(monkeypatch, raw)
+    assert st['prompt_blank'] is False
+    assert st['prompt'] == {'input': GHOST, 'suggestion': None, 'blank': False}
+    assert not any('ghost suggestion' in l for l in st['last_lines'])
+    assert any(l.endswith('❯\xa0' + GHOST) for l in st['last_lines'])
+
+
+def test_agent_status_typed_prefix_plus_suggestion(monkeypatch):
+    st = status_of(monkeypatch, box('merge\x1b[2m it into work\x1b[0m'))
+    assert st['prompt_blank'] is False
+    assert st['prompt'] == {'input': 'merge', 'suggestion': 'it into work', 'blank': False}
+    assert '❯\xa0merge [ghost suggestion, not typed: it into work]' in st['last_lines']
+
+
+@pytest.mark.parametrize('body, typed', [
+    (['', '  second line typed'], '\nsecond line typed'),          # blank ❯ line, real continuation
+    (['first', '  second'], 'first\nsecond'),
+    (['first', '\x1b[2m  ghost on line two\x1b[0m'], 'first\n'),   # the line stays, its ghost doesn't
+])
+def test_multiline_continuation_counts(monkeypatch, body, typed):
+    raw = box(*body)
+    assert agents.claude_prompt_blank(agents.input_view(raw)) is False
+    st = status_of(monkeypatch, raw)
+    assert st['prompt_blank'] is False and st['prompt']['input'] == typed
+
+
+def test_blank_prompt_with_empty_continuation_is_blank(monkeypatch):
+    raw = box('', '   ')
+    assert agents.claude_prompt_blank(agents.input_view(raw))
+    prompt = status_of(monkeypatch, raw)['prompt']
+    assert prompt['blank'] is True and prompt['suggestion'] is None
+    assert prompt['input'] == '\n '          # two lines; the 2-column continuation indent removed
+
+
+@pytest.mark.parametrize('body, typed', [
+    ('\x1b[2m\x1b[0mreal text', 'real text'),                    # reset before the text
+    ('\x1b[2m\x1b[22mreal text', 'real text'),                   # dim turned off with 22
+    ('\x1b[38;5;244m\x1b[39mreal text', 'real text'),            # grey turned off with 39
+    ('\x1b[2mgrey\x1b[0m then typed', 'grey then typed'),         # typed text after a hint: all input
+])
+def test_style_resets_end_the_suggestion(monkeypatch, body, typed):
+    st = status_of(monkeypatch, box(body))
+    assert st['prompt'] == {'input': typed, 'suggestion': None, 'blank': False}
+    assert st['prompt_blank'] is False
+
+
+@pytest.mark.parametrize('sgr', ['3', '1', '4', '34', '38;5;153', '38;2;120;120;120', '48;5;240', '7'])
+def test_unfamiliar_styles_are_kept_as_input(monkeypatch, sgr):
+    st = status_of(monkeypatch, box(f'\x1b[{sgr}mmerge it into work\x1b[0m'))
+    assert st['prompt'] == {'input': 'merge it into work', 'suggestion': None, 'blank': False}
+    assert st['prompt_blank'] is False
+
+
+@pytest.mark.parametrize('body, typed', [
+    (['  indented first line'], '  indented first line'),              # only the ❯ separator goes
+    (['def f():', '      return 1'], 'def f():\n    return 1'),       # 2-col UI indent off, 4 kept
+    (['a  b   c'], 'a  b   c'),
+    (['tab\there'], 'tab\there'),
+    (['one', '', '  three'], 'one\n\nthree'),                         # an empty middle line stays
+])
+def test_typed_whitespace_and_lines_are_preserved(monkeypatch, body, typed):
+    st = status_of(monkeypatch, box(*body))
+    assert st['prompt'] == {'input': typed, 'suggestion': None, 'blank': False}
+
+
+def test_typed_space_before_a_suggestion_stays_typed(monkeypatch):
+    st = status_of(monkeypatch, box('merge \x1b[2mit into work\x1b[0m'))
+    assert st['prompt'] == {'input': 'merge ', 'suggestion': 'it into work', 'blank': False}
+    assert '❯\xa0merge [ghost suggestion, not typed: it into work]' in st['last_lines']
+
+
+@pytest.mark.parametrize('glyph', ['>', '›', '❯', '─', '│', '╭'])
+def test_dim_run_with_a_kept_glyph_is_not_a_suggestion(monkeypatch, glyph):
+    # input_view() keeps prompt glyphs and box drawing even when dim, so the prompt reads
+    # as not blank; the run can't be told apart from input, so none of it is a suggestion
+    text = f'compare the left {glyph} right side'
+    raw = box(f'\x1b[2m{text}\x1b[0m')
+    st = status_of(monkeypatch, raw)
+    assert st['prompt_blank'] is False
+    assert st['prompt'] == {'input': text, 'suggestion': None, 'blank': False}
+    assert not any('ghost suggestion' in l for l in st['last_lines'])
+
+
+def test_dim_runs_split_by_a_plain_space_are_one_suggestion(monkeypatch):
+    st = status_of(monkeypatch, box('\x1b[2mmerge\x1b[0m \x1b[2mit\x1b[0m'))
+    assert st['prompt_blank'] is True
+    assert st['prompt'] == {'input': '', 'suggestion': 'merge it', 'blank': True}
+
+
+@pytest.mark.parametrize('body', [
+    [''], ['typed'], ['\x1b[2mghost\x1b[0m'], ['merge\x1b[2m it into work\x1b[0m'],
+    ['\x1b[2ma > b\x1b[0m'], ['\x1b[2ma >\x1b[0m'], ['\x1b[2m>\x1b[0m'], ['x\x1b[2m >\x1b[0m'],
+    ['\x1b[2mgrey\x1b[0m then typed'], ['\x1b[2mmerge\x1b[0m \x1b[2mit\x1b[0m'],
+    ['', '  next'], ['', '\x1b[2m  ghost\x1b[0m'], ['', '\x1b[2m  a │ b\x1b[0m'],
+    ['\x1b[38;5;244mgrey 256\x1b[39m'], ['\x1b[90mbright black\x1b[39m'], ['\x1b[3mitalic\x1b[0m'],
+    ['  \x1b[2m  spaced ghost  \x1b[0m  '],
+])
+def test_prompt_blank_and_prompt_agree(monkeypatch, body):
+    raw = box(*body)
+    st = status_of(monkeypatch, raw)
+    assert st['prompt']['blank'] == st['prompt_blank'] == agents.claude_prompt_blank(agents.input_view(raw))
+
+
+def test_unrelated_dim_output_is_not_relabelled_or_erased(monkeypatch):
+    st = status_of(monkeypatch, box('\x1b[2mmerge it into work\x1b[0m'))
+    assert st['prompt']['suggestion'] == 'merge it into work'
+    assert '  ⎿  Read 3 files (ctrl+o to expand)' in st['last_lines']
+    assert '  ? for shortcuts' in st['last_lines']
+    assert sum('ghost suggestion' in l for l in st['last_lines']) == 1
+
+
+def test_other_agents_get_plain_last_lines(monkeypatch):
+    raw = '\x1b[2mdim output\x1b[0m\n› \x1b[2mghost\x1b[0m\n'
+    st = status_of(monkeypatch, raw, agent='codex')
+    assert st['prompt'] is None and st['last_lines'] == ['dim output', '› ghost']
+    assert st['prompt_blank'] is True
+
+
+def test_wait_for_idle_timeout_labels_without_erasing(monkeypatch):
+    t = [0.0]
+    res = agents.wait_for_idle('t', timeout=2, poll=1, settle=3, agent='claude',
+                               capture=lambda: box('typed\x1b[2m and ghost\x1b[0m'),
+                               sleep=lambda s: t.__setitem__(0, t[0] + s), clock=lambda: t[0])
+    assert not res['idle'] and res['prompt_blank'] is False
+    assert '  ⎿  Read 3 files (ctrl+o to expand)' in res['last_lines']
+    assert '❯\xa0typed [ghost suggestion, not typed: and ghost]' in res['last_lines']
+
+
+def test_tell_agent_still_refuses_typed_multiline_input(monkeypatch):
+    fake_pane(monkeypatch, CLAUDE, pane_id='%10')
+    raw = box('', '  half-typed follow-up')
+    monkeypatch.setattr(tmux, 'capture_pane', lambda t, escapes=False: raw)
+    monkeypatch.setattr(tmux, 'send_keys_literal', lambda *a, **k: None)
+    monkeypatch.setattr(tmux, 'send_keys', lambda *a, **k: subprocess.CompletedProcess([], 0))
+    monkeypatch.setattr(agents.time, 'sleep', lambda s: None)
+    with pytest.raises(agents.AgentNotReady):
+        agents.tell_agent('agents:2', 'hello')
+
+
+def test_capture_descriptions_warn_against_reading_input():
+    assert 'not evidence of typed input' in mcp_server.capture_pane.__doc__
+    assert 'ghost suggestion, not typed' in mcp_server.agent_status.__doc__
+    assert 'not evidence of typed input' in mcp_server.INSTRUCTIONS
+
+
 def test_muse_tui_wiring():
     tui = agents.tui_for('muse', '%8', capture=lambda t: agents.input_view((FIX / 'muse_idle.ansi').read_text()))
     assert isinstance(tui, agents.MuseTui) and tui.is_prompt_blank()
