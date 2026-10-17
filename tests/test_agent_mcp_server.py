@@ -303,6 +303,55 @@ def test_tokens_from_swarm_mcp_authorization_server(hub_url):
             assert Mcp(tmux, preissued).initialize()[0] == 403          # and it opens nothing there
 
 
+INTROSPECT_URL = 'http://introspect.test/'
+
+
+def fake_introspection(monkeypatch, responses):
+    """Answer RFC 7662 requests to INTROSPECT_URL from responses[token]; pass the rest through."""
+    import io
+    import urllib.parse
+    import urllib.request
+    real = urllib.request.urlopen
+
+    def urlopen(req, *a, **k):
+        if getattr(req, 'full_url', req) != INTROSPECT_URL:
+            return real(req, *a, **k)
+        token = urllib.parse.parse_qs(req.data.decode())['token'][0]
+        return io.BytesIO(json.dumps(responses.get(token, {'active': False})).encode())
+    monkeypatch.setattr(urllib.request, 'urlopen', urlopen)
+
+
+def test_introspected_tokens_must_name_this_resource(monkeypatch):
+    port = free_port()
+    agent_url = f'http://127.0.0.1:{port}/mcp/agent'
+    claims = {'active': True, 'iss': 'https://idp.example', 'scope': A.SCOPE_AGENT,
+              'exp': time.time() + 300, 'client_id': 'agents'}
+    fake_introspection(monkeypatch, {
+        'opaque-right-aud': {**claims, 'aud': agent_url},
+        'opaque-right-resource': {**claims, 'resource': agent_url},
+        'opaque-no-aud': claims,
+        'opaque-other-aud': {**claims, 'aud': 'https://elsewhere.example/mcp/agent'},
+    })
+    with AgentServer({'mode': 'external', 'issuer_url': 'https://idp.example',
+                      'introspection_url': INTROSPECT_URL}, port=port) as srv:
+        assert AgentMcp(srv, 'opaque-right-aud').initialize()[0] == 200
+        assert AgentMcp(srv, 'opaque-right-resource').initialize()[0] == 200
+        assert AgentMcp(srv, 'opaque-no-aud').initialize()[0] == 401
+        assert AgentMcp(srv, 'opaque-other-aud').initialize()[0] == 401
+
+
+def test_swarm_mcp_introspection_still_accepts_audienceless_tokens(monkeypatch):
+    # swarm-mcp does not bind tokens to its resource, so its behaviour is unchanged
+    cfg = A.AuthConfig(mode='external', issuer_url='https://idp.example',
+                       resource_url='http://127.0.0.1:1/mcp', audience='http://127.0.0.1:1/mcp',
+                       introspection_url=INTROSPECT_URL, accept_local_tokens=False)
+    fake_introspection(monkeypatch, {'opaque': {'active': True, 'iss': 'https://idp.example',
+                                                'scope': A.SCOPE_READ, 'exp': time.time() + 60}})
+    assert A.ExternalTokenVerifier(cfg, jwks={'keys': []}).verify_sync('opaque') is not None
+    strict = A.ExternalTokenVerifier(cfg, jwks={'keys': []}, require_audience=True)
+    assert strict.verify_sync('opaque') is None
+
+
 def test_dcr_on_swarm_mcp_allows_the_agent_scope():
     with Server() as tmux:
         st, _, body = http('POST', tmux.base + '/register', body={

@@ -494,8 +494,15 @@ def create_confidential_client(store: AuthStore, name: str, scopes: list[str]):
 class ExternalTokenVerifier:
     """mcp.server.auth.provider.TokenVerifier for an outside OAuth/OIDC issuer."""
 
-    def __init__(self, config: AuthConfig, store: AuthStore | None = None, jwks: dict | None = None):
+    def __init__(self, config: AuthConfig, store: AuthStore | None = None, jwks: dict | None = None,
+                 require_audience: bool = False):
+        """require_audience: an introspection response must name this server in aud or
+        resource. Without it, a response with neither claim is accepted. Set it where tokens
+        must be bound to this exact resource (swarm-agent), because _to_access_token stamps
+        this server's resource_url onto every accepted token. JWTs always need a matching aud
+        or resource (verify_jwt)."""
         self.config = config
+        self.require_audience = require_audience
         self.store = store if store is not None else (AuthStore() if config.accept_local_tokens else None)
         self._jwks = jwks
         if jwks is None and config.jwks_file:
@@ -569,7 +576,8 @@ class ExternalTokenVerifier:
             return None
         if claims.get('iss') and claims['iss'].rstrip('/') != cfg.issuer_url.rstrip('/'):
             return None
-        if (claims.get('aud') or claims.get('resource')) and not self._audience_ok(claims):
+        if (self.require_audience or claims.get('aud') or claims.get('resource')) \
+                and not self._audience_ok(claims):
             return None
         return claims
 

@@ -101,7 +101,8 @@ def build_http_app(profile: HttpProfile, host='127.0.0.1', port=8765, path='/mcp
         settings = AuthSettings(issuer_url=cfg.issuer_url, resource_server_url=cfg.resource_url,
                                 required_scopes=cfg.required_scopes,
                                 validate_token_resource=profile.external_checks_resource)
-        server = profile.build_server(auth=settings, token_verifier=A.ExternalTokenVerifier(cfg))
+        verifier = A.ExternalTokenVerifier(cfg, require_audience=profile.external_checks_resource)
+        server = profile.build_server(auth=settings, token_verifier=verifier)
 
     allowed_hosts = ['127.0.0.1:*', 'localhost:*', '[::1]:*']
     allowed_origins = ['http://127.0.0.1:*', 'http://localhost:*', 'http://[::1]:*']
