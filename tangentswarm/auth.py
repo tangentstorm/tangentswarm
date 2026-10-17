@@ -21,7 +21,8 @@ and the authorization-server routes) and adds one of two modes.
 
 Every request needs the tangentswarm:read scope (list, capture and status tools).
 Tools that type into agent panes or start agents (send_keys, tell_agent, start_agent
-and others) also need tangentswarm:shell.
+and others) also need tangentswarm:shell. swarm-agent, the agents' own message
+server, needs tangentswarm:agent instead, on a token issued for its resource URL.
 
 The repo never holds a secret. The store keeps tokens, client secrets and approval
 codes only as SHA-256 hashes, and the admin password as a scrypt hash.
@@ -50,7 +51,13 @@ from . import paths
 
 SCOPE_READ = 'tangentswarm:read'
 SCOPE_SHELL = 'tangentswarm:shell'
-ALL_SCOPES = [SCOPE_READ, SCOPE_SHELL]
+ALL_SCOPES = [SCOPE_READ, SCOPE_SHELL]          # swarm-mcp's scopes
+# swarm-agent (agent_mcp_server.py) needs only this one. It grants nothing on swarm-mcp,
+# and swarm-mcp's scopes grant nothing on swarm-agent.
+SCOPE_AGENT = 'tangentswarm:agent'
+# what the builtin authorization server registers clients for and issues; the token's
+# resource decides which server accepts it
+ISSUABLE_SCOPES = ALL_SCOPES + [SCOPE_AGENT]
 
 TOKEN_PREFIX = 'tsw_'          # locally issued opaque tokens
 JWT_ALGORITHMS = ['RS256', 'RS384', 'RS512', 'PS256', 'PS384', 'PS512',
@@ -59,6 +66,14 @@ JWT_ALGORITHMS = ['RS256', 'RS384', 'RS512', 'PS256', 'PS384', 'PS512',
 
 # ---------------------------------------------------------------------------
 # configuration
+
+def local_origin(host, port):
+    if host in ('0.0.0.0', '::'):
+        host = '127.0.0.1'
+    elif ':' in host and not host.startswith('['):
+        host = f'[{host}]'
+    return f'http://{host}:{port}'
+
 
 def config_file():
     return paths.config_dir() / 'mcp-auth.yaml'
@@ -132,7 +147,7 @@ def load_auth_config(host='127.0.0.1', port=8765, path='/mcp', overrides=None):
 
     known = {f for f in AuthConfig.__dataclass_fields__}
     cfg = AuthConfig(**{k: v for k, v in data.items() if k in known})
-    base = f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}"
+    base = local_origin(host, port)
     if not cfg.resource_url:
         cfg.resource_url = base + path
     if not cfg.issuer_url and cfg.mode == 'builtin':
@@ -448,7 +463,12 @@ class BuiltinProvider:
         raise TokenError('unsupported_grant_type', 'identity assertion grant is not supported')
 
     # client_credentials grant, which the SDK's token handler lacks (see token_endpoint)
-    def client_credentials(self, client_id, client_secret, requested_scopes):
+    def client_credentials(self, client_id, client_secret, requested_scopes, resource=None):
+        """resource (RFC 8707) may name this server or a path under it, such as swarm-agent's
+        /mcp/agent next to swarm-mcp's /mcp. The default is this server."""
+        from mcp.shared.auth_utils import check_resource_allowed
+        if resource and not check_resource_allowed(resource, self.config.resource_url):
+            return None, 'invalid_target'
         row = self.store.get_client(client_id)
         if not row or row['kind'] != 'confidential' or not row['secret_hash']:
             return None, 'invalid_client'
@@ -460,7 +480,7 @@ class BuiltinProvider:
         if any(s not in allowed for s in scopes):
             return None, 'invalid_scope'
         token, _, _ = self.store.issue_token(client_id, scopes, self.config.access_token_ttl,
-                                             'access', self.config.resource_url, client_id)
+                                             'access', resource or self.config.resource_url, client_id)
         return {'access_token': token, 'token_type': 'Bearer',
                 'expires_in': self.config.access_token_ttl, 'scope': ' '.join(scopes)}, None
 
@@ -482,8 +502,15 @@ def create_confidential_client(store: AuthStore, name: str, scopes: list[str]):
 class ExternalTokenVerifier:
     """mcp.server.auth.provider.TokenVerifier for an outside OAuth/OIDC issuer."""
 
-    def __init__(self, config: AuthConfig, store: AuthStore | None = None, jwks: dict | None = None):
+    def __init__(self, config: AuthConfig, store: AuthStore | None = None, jwks: dict | None = None,
+                 require_audience: bool = False):
+        """require_audience: an introspection response must name this server in aud or
+        resource. Without it, a response with neither claim is accepted. Set it where tokens
+        must be bound to this exact resource (swarm-agent), because _to_access_token stamps
+        this server's resource_url onto every accepted token. JWTs always need a matching aud
+        or resource (verify_jwt)."""
         self.config = config
+        self.require_audience = require_audience
         self.store = store if store is not None else (AuthStore() if config.accept_local_tokens else None)
         self._jwks = jwks
         if jwks is None and config.jwks_file:
@@ -557,7 +584,8 @@ class ExternalTokenVerifier:
             return None
         if claims.get('iss') and claims['iss'].rstrip('/') != cfg.issuer_url.rstrip('/'):
             return None
-        if (claims.get('aud') or claims.get('resource')) and not self._audience_ok(claims):
+        if (self.require_audience or claims.get('aud') or claims.get('resource')) \
+                and not self._audience_ok(claims):
             return None
         return claims
 
@@ -636,9 +664,12 @@ def make_extra_routes(provider: BuiltinProvider):
         if not client_id:
             return _err('invalid_client', 'missing client credentials', 401)
         scopes = (form.get('scope') or '').split()
-        result, error = provider.client_credentials(str(client_id), str(secret or ''), scopes)
+        result, error = provider.client_credentials(str(client_id), str(secret or ''), scopes,
+                                                    str(form.get('resource') or '') or None)
         if error == 'invalid_client':
             return _err('invalid_client', 'unknown client or bad secret', 401)
+        if error == 'invalid_target':
+            return _err(error, 'resource is not served by this authorization server')
         if error:
             return _err(error, 'requested scope not allowed for this client')
         return JSONResponse(result, headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})

@@ -118,6 +118,15 @@ class Mcp:
 # ---------------------------------------------------------------------------
 # built-in authorization server
 
+@pytest.mark.parametrize('host,origin', [('::1', 'http://[::1]:8765'), ('0.0.0.0', 'http://127.0.0.1:8765'),
+                                         ('127.0.0.1', 'http://127.0.0.1:8765')])
+def test_builtin_urls_bracket_ipv6_hosts(host, origin, monkeypatch, tmp_path):
+    monkeypatch.setattr(A, 'config_file', lambda: tmp_path / 'none.yaml')
+    cfg = A.load_auth_config(host, 8765, '/mcp', {'mode': 'builtin'})
+    assert cfg.resource_url == cfg.audience == origin + '/mcp'
+    assert cfg.issuer_url == origin
+
+
 def test_unauthenticated_request_gets_401_with_resource_metadata():
     with Server() as srv:
         st, headers, _ = Mcp(srv, None).initialize()

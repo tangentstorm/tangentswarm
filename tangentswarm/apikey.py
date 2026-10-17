@@ -44,8 +44,8 @@ class ApiKeyError(RuntimeError):
     pass
 
 
-def default_key_file():
-    return paths.config_dir() / 'api_key'
+def default_key_file(name='api_key'):
+    return paths.config_dir() / name
 
 
 def fingerprint(key: str) -> str:
@@ -53,18 +53,18 @@ def fingerprint(key: str) -> str:
     return 'sha256:' + hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
-def key_configured(env=None) -> bool:
+def key_configured(env=None, env_key=ENV_KEY, env_key_file=ENV_KEY_FILE) -> bool:
     env = os.environ if env is None else env
-    return bool(env.get(ENV_KEY) or env.get(ENV_KEY_FILE))
+    return bool(env.get(env_key) or env.get(env_key_file))
 
 
-def _read_key_file(path) -> str:
+def _read_key_file(path, prog='swarm-mcp') -> str:
     path = os.path.expanduser(str(path))
     try:
         st = os.stat(path)
     except FileNotFoundError:
         raise ApiKeyError(f'API key file {path} does not exist '
-                          f'(create one with: swarm-mcp --gen-api-key {path})') from None
+                          f'(create one with: {prog} --gen-api-key {path})') from None
     if not stat.S_ISREG(st.st_mode):
         raise ApiKeyError(f'API key file {path} is not a regular file')
     if st.st_mode & 0o077:
@@ -73,16 +73,18 @@ def _read_key_file(path) -> str:
         return f.read().strip()
 
 
-def load_api_key(key_file=None, env=None):
-    """Return (key, source). Raises ApiKeyError when no usable key is configured."""
+def load_api_key(key_file=None, env=None, env_key=ENV_KEY, env_key_file=ENV_KEY_FILE,
+                 default_file=None, prog='swarm-mcp'):
+    """Return (key, source). Raises ApiKeyError when no usable key is configured.
+    swarm-agent passes its own env names and default file, so its key stays separate."""
     env = os.environ if env is None else env
     if key_file:
-        key, source = _read_key_file(key_file), str(key_file)
-    elif env.get(ENV_KEY):
-        key, source = env[ENV_KEY].strip(), '$' + ENV_KEY
+        key, source = _read_key_file(key_file, prog), str(key_file)
+    elif env.get(env_key):
+        key, source = env[env_key].strip(), '$' + env_key
     else:
-        path = env.get(ENV_KEY_FILE) or default_key_file()
-        key, source = _read_key_file(path), str(path)
+        path = env.get(env_key_file) or default_file or default_key_file()
+        key, source = _read_key_file(path, prog), str(path)
     if not key:
         raise ApiKeyError(f'API key from {source} is empty')
     if len(key) < MIN_KEY_LEN:
@@ -90,9 +92,9 @@ def load_api_key(key_file=None, env=None):
     return key, source
 
 
-def generate_key_file(path=None) -> str:
+def generate_key_file(path=None, default_file=None) -> str:
     """Write a new random key to path with mode 0600 and return the path. Refuses to overwrite a file."""
-    path = os.path.expanduser(str(path or default_key_file()))
+    path = os.path.expanduser(str(path or default_file or default_key_file()))
     if os.path.exists(path):
         raise ApiKeyError(f'{path} already exists; remove it first to rotate the key')
     paths.ensure_private_dir(os.path.dirname(os.path.abspath(path)))

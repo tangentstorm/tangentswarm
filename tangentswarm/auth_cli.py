@@ -37,10 +37,10 @@ def _scopes(values):
     for v in values or []:
         scopes += v.replace(',', ' ').split()
     scopes = scopes or list(A.ALL_SCOPES)
-    bad = [s for s in scopes if s not in A.ALL_SCOPES]
+    bad = [s for s in scopes if s not in A.ISSUABLE_SCOPES]
     if bad:
-        raise SystemExit(f'unknown scope(s): {bad}; valid: {A.ALL_SCOPES}')
-    if A.SCOPE_READ not in scopes:
+        raise SystemExit(f'unknown scope(s): {bad}; valid: {A.ISSUABLE_SCOPES}')
+    if A.SCOPE_READ not in scopes and A.SCOPE_SHELL in scopes:
         print(f'note: every request needs {A.SCOPE_READ}; adding it', file=sys.stderr)
         scopes.insert(0, A.SCOPE_READ)
     return scopes
