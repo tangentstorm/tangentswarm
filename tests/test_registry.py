@@ -194,6 +194,23 @@ def test_send_keys_to_agent_pane_goes_to_the_resolved_pane(monkeypatch):
     assert sent == [('%10', 'hello', True)] and out['agent'] == 'claude'
 
 
+def test_send_keys_refuses_lone_ctrl_b(monkeypatch):
+    fake_pane(monkeypatch, CLAUDE, pane_id='%10')
+    monkeypatch.setattr(tmux, 'prefix', lambda: 'C-r')
+    sent = []
+    monkeypatch.setattr(tmux, 'send_keys_literal', lambda t, s, enter=True: sent.append((t, s)))
+    monkeypatch.setattr(tmux, 'send_keys', lambda t, k, enter=True: sent.append((t, k)) or
+                        subprocess.CompletedProcess([], 0))
+    for text, literal in (('C-b', False), ('^B', False), ('\x02', True)):
+        with pytest.raises(Exception, match="Claude Code's 'run in background'.*prefix here is C-r"):
+            anyio.run(lambda: mcp_server.send_keys('agents:2', text, enter=False, literal=literal))
+    assert sent == []
+    anyio.run(lambda: mcp_server.send_keys('agents:2', 'C-b', literal=True))       # types "C-b"
+    anyio.run(lambda: mcp_server.send_keys('agents:2', 'C-b', enter=False, literal=False,
+                                           allow_ctrl_b=True))
+    assert sent == [('%10', 'C-b'), ('%10', 'C-b')]
+
+
 def test_dead_or_missing_pane_rejected(monkeypatch):
     fake_pane(monkeypatch, CLAUDE, dead='1')
     with pytest.raises(agents.NotAnAgentPane):

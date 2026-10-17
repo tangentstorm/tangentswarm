@@ -4,6 +4,7 @@ Every call passes an argv list to subprocess, never a shell string. The MCP serv
 uses the structured helpers (list_sessions, list_panes, capture_pane,
 send_keys_literal, new_session, new_window). The swarm CLI uses the older helpers.
 """
+import os
 import subprocess
 import time
 
@@ -14,6 +15,43 @@ TMUX = 'tmux'
 SEP = '\t'
 
 DEFAULT_SHELL = "${SHELL:-bash}"
+
+# The tmux prefix key. send-keys writes straight to the pane and never goes
+# through tmux's key tables, so swarm never needs to press the prefix. It is
+# reported to callers (send_keys errors) so agents can tell tmux's key apart
+# from the keys of the program in the pane.
+DEFAULT_PREFIX = 'C-r'
+PREFIX_ENV = 'TANGENTSWARM_TMUX_PREFIX'
+_prefix_override = None
+
+
+def set_prefix(key):
+    """Override the tmux prefix (swarm-mcp --tmux-prefix). None clears it."""
+    global _prefix_override
+    _prefix_override = key or None
+
+
+def prefix():
+    """The tmux prefix: --tmux-prefix, then $TANGENTSWARM_TMUX_PREFIX, then the
+    running server's `show-options -gv prefix`, then DEFAULT_PREFIX."""
+    if _prefix_override:
+        return _prefix_override
+    if os.environ.get(PREFIX_ENV):
+        return os.environ[PREFIX_ENV]
+    try:
+        r = _run([TMUX, 'show-options', '-gv', 'prefix'])
+    except OSError:
+        return DEFAULT_PREFIX
+    out = r.stdout.strip()
+    return out if r.returncode == 0 and out not in ('', 'None') else DEFAULT_PREFIX
+
+
+def is_ctrl_b(keys, literal=False):
+    """True if sending `keys` would press ctrl+b (Claude Code's "run in background"): a raw
+    0x02 byte anywhere, or, as a key name (literal=False), C-b or ^B on its own."""
+    if '\x02' in keys:
+        return True
+    return not literal and keys.strip().lower() in ('c-b', '^b')
 
 
 class TmuxError(RuntimeError):
