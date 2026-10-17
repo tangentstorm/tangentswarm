@@ -196,19 +196,36 @@ def test_send_keys_to_agent_pane_goes_to_the_resolved_pane(monkeypatch):
 
 def test_send_keys_refuses_lone_ctrl_b(monkeypatch):
     fake_pane(monkeypatch, CLAUDE, pane_id='%10')
-    monkeypatch.setattr(tmux, 'prefix', lambda: 'C-r')
+    monkeypatch.setattr(tmux, 'prefix_keys', lambda: ['C-r'])
     sent = []
     monkeypatch.setattr(tmux, 'send_keys_literal', lambda t, s, enter=True: sent.append((t, s)))
     monkeypatch.setattr(tmux, 'send_keys', lambda t, k, enter=True: sent.append((t, k)) or
                         subprocess.CompletedProcess([], 0))
     for text, literal in (('C-b', False), ('^B', False), ('\x02', True)):
-        with pytest.raises(Exception, match="Claude Code's 'run in background'.*prefix here is C-r"):
+        with pytest.raises(Exception, match="Claude Code's 'run in background'.*tmux_action"):
             anyio.run(lambda: mcp_server.send_keys('agents:2', text, enter=False, literal=literal))
     assert sent == []
     anyio.run(lambda: mcp_server.send_keys('agents:2', 'C-b', literal=True))       # types "C-b"
     anyio.run(lambda: mcp_server.send_keys('agents:2', 'C-b', enter=False, literal=False,
                                            allow_ctrl_b=True))
     assert sent == [('%10', 'C-b'), ('%10', 'C-b')]
+
+
+def test_send_keys_refuses_the_tmux_prefix(monkeypatch):
+    fake_pane(monkeypatch, CLAUDE, pane_id='%10')
+    monkeypatch.setattr(tmux, 'prefix_keys', lambda: ['C-r'])
+    sent = []
+    monkeypatch.setattr(tmux, 'send_keys_literal', lambda t, s, enter=True: sent.append((t, s)))
+    monkeypatch.setattr(tmux, 'send_keys', lambda t, k, enter=True: sent.append((t, k)) or
+                        subprocess.CompletedProcess([], 0))
+    for keys in ('C-r', '^R'):
+        for allow in (False, True):        # allow_ctrl_b doesn't unlock the prefix
+            with pytest.raises(Exception, match="tmux's prefix key.*tmux_action.*move_window"):
+                anyio.run(lambda: mcp_server.send_keys('agents:2', keys, enter=False, literal=False,
+                                                       allow_ctrl_b=allow))
+    anyio.run(lambda: mcp_server.send_keys('agents:2', 'C-c', enter=False, literal=False))
+    anyio.run(lambda: mcp_server.send_keys('agents:2', 'C-r', enter=False))        # literal text
+    assert sent == [('%10', 'C-c'), ('%10', 'C-r')]
 
 
 def test_dead_or_missing_pane_rejected(monkeypatch):

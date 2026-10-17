@@ -4,7 +4,6 @@ Every call passes an argv list to subprocess, never a shell string. The MCP serv
 uses the structured helpers (list_sessions, list_panes, capture_pane,
 send_keys_literal, new_session, new_window). The swarm CLI uses the older helpers.
 """
-import os
 import subprocess
 import time
 
@@ -16,42 +15,40 @@ SEP = '\t'
 
 DEFAULT_SHELL = "${SHELL:-bash}"
 
-# The tmux prefix key. send-keys writes straight to the pane and never goes
-# through tmux's key tables, so swarm never needs to press the prefix. It is
-# reported to callers (send_keys errors) so agents can tell tmux's key apart
-# from the keys of the program in the pane.
-DEFAULT_PREFIX = 'C-r'
-PREFIX_ENV = 'TANGENTSWARM_TMUX_PREFIX'
-_prefix_override = None
+# send-keys writes straight to the pane and never goes through tmux's key tables, so a
+# prefix key sent with it never reaches tmux: the program in the pane gets a stray
+# control character. Clients use tangentswarm.tmux_actions for tmux commands instead,
+# and send_keys refuses the prefix keys (and C-b, Claude Code's "run in background").
+
+def prefix_keys():
+    """The running server's prefix keys (the prefix and prefix2 options), if any."""
+    keys = []
+    for opt in ('prefix', 'prefix2'):
+        try:
+            r = _run([TMUX, 'show-options', '-gv', opt])
+        except OSError:
+            break
+        key = r.stdout.strip()
+        if r.returncode == 0 and key and key != 'None':
+            keys.append(key)
+    return keys
 
 
-def set_prefix(key):
-    """Override the tmux prefix (swarm-mcp --tmux-prefix). None clears it."""
-    global _prefix_override
-    _prefix_override = key or None
+def _key(name):
+    """Normalise a key name for comparison: case-insensitive, ^R spelled C-r."""
+    k = name.strip().lower()
+    return 'c-' + k[1] if len(k) == 2 and k[0] == '^' else k
 
 
-def prefix():
-    """The tmux prefix: --tmux-prefix, then $TANGENTSWARM_TMUX_PREFIX, then the
-    running server's `show-options -gv prefix`, then DEFAULT_PREFIX."""
-    if _prefix_override:
-        return _prefix_override
-    if os.environ.get(PREFIX_ENV):
-        return os.environ[PREFIX_ENV]
-    try:
-        r = _run([TMUX, 'show-options', '-gv', 'prefix'])
-    except OSError:
-        return DEFAULT_PREFIX
-    out = r.stdout.strip()
-    return out if r.returncode == 0 and out not in ('', 'None') else DEFAULT_PREFIX
-
-
-def is_ctrl_b(keys, literal=False):
-    """True if sending `keys` would press ctrl+b (Claude Code's "run in background"): a raw
-    0x02 byte anywhere, or, as a key name (literal=False), C-b or ^B on its own."""
-    if '\x02' in keys:
-        return True
-    return not literal and keys.strip().lower() in ('c-b', '^b')
+def refused_key(keys, literal=False):
+    """Why send_keys should not send `keys`, or None. 'ctrl_b': a raw 0x02 byte, or C-b as a
+    key name. 'prefix': a tmux prefix key as a key name (only checked when literal=False,
+    since literal text can't press one)."""
+    if '\x02' in keys or (not literal and _key(keys) == 'c-b'):
+        return 'ctrl_b'
+    if not literal and _key(keys) in {_key(p) for p in prefix_keys()}:
+        return 'prefix'
+    return None
 
 
 class TmuxError(RuntimeError):

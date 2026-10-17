@@ -415,7 +415,8 @@ expose port 5002 or 5003.
 | `list_sessions` | read | tmux sessions: name, id, windows, attached, created |
 | `list_panes(target?, all?)` | read | panes: session, window index/name, pane index/id, active, command, path, size |
 | `capture_pane(target, history_lines?, escapes?)` | read | pane text (`-S -N` scrollback, `-e` escapes) |
-| `send_keys(target, text, enter=true, literal=true, allow_ctrl_b=false)` | shell | agent panes only: literal text, 0.5s, separate Enter; `literal=false` for key names; a lone C-b is refused (see below) |
+| `send_keys(target, text, enter=true, literal=true, allow_ctrl_b=false)` | shell | agent panes only: literal text, 0.5s, separate Enter; `literal=false` for key names; the tmux prefix and a lone C-b are refused (see below) |
+| `tmux_action(target, action, arg?)` | shell | named tmux command on an agent's own pane or window: `show_window`, `select_pane`, `zoom`, `unzoom`, `rename_window`, `move_window`, `set_pane_title` (see below) |
 | `list_agents` | read | the registered agents: installed?, binary, exact argv, adapter level; the agent root |
 | `start_agent(agent, repo, branch, session="agents", window_name?)` | shell | start a registered agent (enum) in its own worktree `<root>/<repo>.<branch>` (see [One worktree per agent](#one-worktree-per-agent)) |
 | `list_worktrees(repo?)` | read | repos under the agent root and their worktrees: branch, dirty, on-layout, panes working in each |
@@ -468,12 +469,30 @@ with `TANGENTSWARM_AGENT_<NAME>=/abs/path`.
   foreground process group (`+` in the `ps` stat) is a registered agent. They refuse a
   bash prompt, a dead pane, or a shell whose agent was suspended with C-z. They then send
   keys to that pane id.
-- `send_keys` writes straight to the pane, so tmux's prefix key and bindings never fire,
-  whatever the prefix is. The `ctrl+b ctrl+b to run in background` hint on Claude Code's
-  screen is a Claude Code shortcut, not tmux, and agents that copy it off the screen would
-  background the target's running command. `send_keys` refuses C-b (as a key name, or a raw
-  0x02 byte) unless `allow_ctrl_b=true`. The refusal names the tmux prefix, taken from
-  `--tmux-prefix`, then `$TANGENTSWARM_TMUX_PREFIX`, then `tmux show -gv prefix`, then `C-r`.
+- Clients never press tmux's prefix. `send_keys` writes straight to the pane, so tmux's
+  key bindings never fire and a prefix key would only reach the agent as a stray control
+  character. `send_keys` refuses the server's prefix keys (`prefix` and `prefix2`, read
+  live with `tmux show -gv`) as key names, and points the caller to `tmux_action`.
+- `tmux_action(target, action, arg)` runs one command from a fixed table against the
+  agent's own pane, window or session. It resolves `target` to the exact pane and needs
+  a registered agent there, like the typing tools. It then uses the pane, window and
+  session ids, so renaming a session or window can't redirect the command:
+
+  | action | arg | tmux command |
+  | --- | --- | --- |
+  | `show_window` | | `select-window` on the agent's window |
+  | `select_pane` | | `select-pane` on the agent's pane |
+  | `zoom` / `unzoom` | | `resize-pane -Z`, only when the zoom state needs to change |
+  | `rename_window` | kebab-case name, max 40 | `rename-window` |
+  | `move_window` | index 0–9999 | `move-window` within the agent's session; a taken index gets `-b` (insert there, later windows move up) |
+  | `set_pane_title` | 1–64 printable characters | `select-pane -T`. Agents such as Claude Code may retitle their own pane later (tmux's `allow-set-title`) |
+
+  There are no kill, respawn, run-shell, split, new-window, source-file, set-option or
+  detach actions.
+- The `ctrl+b ctrl+b to run in background` hint on Claude Code's screen is a Claude Code
+  shortcut, not tmux. Agents that copy it off the screen would background the target's
+  running command, so `send_keys` refuses C-b (as a key name, or a raw 0x02 byte) unless
+  `allow_ctrl_b=true`.
 - Agent recognition looks at the process's comm, its argv[0] and, for node, bun and deno,
   the script name. It never looks at the rest of the command line, because prompts often
   mention other agents.

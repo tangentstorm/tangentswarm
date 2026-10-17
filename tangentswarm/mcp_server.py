@@ -32,7 +32,7 @@ import sys
 
 import anyio
 
-from . import __version__, agents, registry, tmux, worktrees
+from . import __version__, agents, registry, tmux, tmux_actions, worktrees
 from .auth import SCOPE_READ, SCOPE_SHELL
 
 from mcp.server.mcpserver import MCPServer as _Server   # mcp 2.x (FastMCP was renamed)
@@ -43,9 +43,11 @@ start_agent (see list_agents; every agent gets its own git worktree, see list_wo
 and remove_worktree), and talk to it with tell_agent or send_keys (literal text,
 then Enter after a 0.5s pause). Typing is only allowed into panes whose foreground process
 is a registered agent (claude, muse, grok, gemini, codex) -- never into a shell.
-send_keys goes straight to the pane, never through tmux's prefix or bindings. ctrl+b
-(Claude Code's "run in background") is a Claude Code key, not tmux's, and a lone C-b is
-refused unless allow_ctrl_b=true.
+Never press tmux's prefix: send_keys goes straight to the agent, never through tmux's
+bindings, so send_keys refuses the prefix key. For tmux commands on an agent's own pane
+or window (show_window, select_pane, zoom, unzoom, rename_window, move_window,
+set_pane_title) call tmux_action. ctrl+b (Claude Code's "run in background") is a Claude
+Code key, not tmux's; a lone C-b is refused unless allow_ctrl_b=true.
 Targets use tmux syntax: session, session:window, session:window.pane or %pane_id.
 cloud_* tools talk to Claude Code cloud sessions through the tangentswarm cloud hub
 (`swarm cloud serve`, ws://127.0.0.1:5002/ws). There are no kill tools and no
@@ -163,14 +165,21 @@ async def send_keys(target: str, text: str, enter: bool = True, literal: bool = 
     a separate call. literal=false passes `text` as one tmux key name, such as 'C-c',
     'Escape' or 'Up'.
 
-    Keys go straight to the agent, never through tmux's prefix or key bindings. The
-    'ctrl+b ctrl+b to run in background' hint on Claude Code's screen is a Claude Code
-    shortcut, not tmux; C-b is refused unless allow_ctrl_b=true."""
-    if tmux.is_ctrl_b(text, literal=literal) and not allow_ctrl_b:
+    Keys go straight to the agent, never through tmux's prefix or key bindings, so the
+    tmux prefix key is refused: use tmux_action for tmux commands. The 'ctrl+b ctrl+b to
+    run in background' hint on Claude Code's screen is a Claude Code shortcut, not tmux;
+    C-b is refused unless allow_ctrl_b=true."""
+    why = tmux.refused_key(text, literal=literal)
+    if why == 'prefix':
         raise ToolError(
-            "refusing to send C-b: ctrl+b is Claude Code's 'run in background' key, not tmux's "
-            f"(the tmux prefix here is {tmux.prefix()}, and send_keys bypasses it anyway). "
-            "Pass allow_ctrl_b=true if you really mean to background the agent's running command.")
+            f"refusing to send {text.strip()}: it is tmux's prefix key, and send_keys goes straight "
+            "to the agent, so tmux would never see it. Use tmux_action for tmux commands "
+            f"({', '.join(tmux_actions.ACTIONS)}).")
+    if why == 'ctrl_b' and not allow_ctrl_b:
+        raise ToolError(
+            "refusing to send C-b: ctrl+b is Claude Code's 'run in background' key, not tmux's. "
+            "Use tmux_action for tmux commands. Pass allow_ctrl_b=true if you really mean to "
+            "background the agent's running command.")
     def run():
         pane = agents.require_agent_pane(target)
         pid = pane['pane_id']
@@ -187,6 +196,28 @@ async def send_keys(target: str, text: str, enter: bool = True, literal: bool = 
         raise _err(e)
     return {'target': target, 'pane_id': pane['pane_id'], 'agent': pane['agent'],
             'sent_chars': len(text), 'enter': enter, 'literal': literal}
+
+
+@_scoped(SCOPE_SHELL)
+async def tmux_action(target: str, action: str, arg: str | int | None = None) -> dict:
+    """Run a named tmux command on a coding agent's own pane or window. Use this instead of
+    tmux's prefix key, which send_keys refuses. The target resolves to the exact pane, which
+    must run a registered agent, and the command uses that pane's own window and session.
+    Actions:
+    - show_window: make the agent's window the current one in its session
+    - select_pane: make the agent's pane the active one in its window
+    - zoom / unzoom: zoom the agent's pane to fill its window / restore the layout
+    - rename_window, arg = kebab-case name (max 40)
+    - move_window, arg = window index: move the agent's window there in its session; if the
+      index is taken, the window is inserted there and later windows move up
+    - set_pane_title, arg = up to 64 printable characters (an agent may later retitle its
+      own pane)
+    There are no kill, respawn or run-command actions. Returns the commands that ran
+    (none when nothing needed to change)."""
+    try:
+        return await anyio.to_thread.run_sync(lambda: tmux_actions.run_action(target, action, arg))
+    except tmux.TmuxError as e:
+        raise _err(e)
 
 
 @_scoped(SCOPE_READ)
@@ -369,7 +400,7 @@ async def cloud_wait_for_response(session_id: str, text: str | None = None, time
     return await _cloud().cloud_wait_for_response(session_id, text, timeout_sec, poll_ms)
 
 
-TOOLS = [list_sessions, list_panes, capture_pane, send_keys, list_agents, start_agent,
+TOOLS = [list_sessions, list_panes, capture_pane, send_keys, tmux_action, list_agents, start_agent,
          list_worktrees, remove_worktree,
          agent_status, pane_ready, wait_for_idle, tell_agent, swarm_status, tell_worker,
          cloud_list_sessions, cloud_send_message, cloud_get_latest_response, cloud_wait_for_response]
@@ -484,12 +515,7 @@ def main(argv=None):
                          'mode 600, without printing it; then exit')
     ap.add_argument('--issuer', help='external authorization server issuer URL')
     ap.add_argument('--audience', help='expected token audience (default: the resource URL)')
-    ap.add_argument('--tmux-prefix', metavar='KEY',
-                    help=f'tmux prefix key to report to agents (default: ${tmux.PREFIX_ENV}, '
-                         f'then `tmux show -gv prefix`, then {tmux.DEFAULT_PREFIX})')
     a = ap.parse_args(argv)
-    if a.tmux_prefix:
-        tmux.set_prefix(a.tmux_prefix)
 
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
     if a.gen_api_key is not None:
