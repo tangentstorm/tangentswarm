@@ -245,6 +245,14 @@ def test_external_mode_from_env_or_config_derives_issuer(source, monkeypatch):
     assert cfg.mode == 'external' and cfg.issuer_url == 'https://swarm.example'
 
 
+@pytest.mark.parametrize('host,origin', [('::1', 'http://[::1]:8768'), ('fd00::1', 'http://[fd00::1]:8768'),
+                                         ('::', 'http://127.0.0.1:8768'), ('localhost', 'http://localhost:8768')])
+def test_derived_urls_bracket_ipv6_hosts(host, origin):
+    _, cfg, _ = S.build_http_app(host, 8768, S.DEFAULT_PATH, {'mode': 'external'})
+    assert cfg.resource_url == cfg.audience == origin + S.DEFAULT_PATH
+    assert cfg.issuer_url == origin
+
+
 def test_explicit_issuer_from_env_or_config_wins(monkeypatch):
     A.config_file().parent.mkdir(parents=True, exist_ok=True)
     A.config_file().write_text('mode: external\nissuer_url: https://idp.example\n')

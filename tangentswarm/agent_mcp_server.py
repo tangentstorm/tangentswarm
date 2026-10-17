@@ -277,13 +277,14 @@ def build_http_app(host='127.0.0.1', port=DEFAULT_PORT, path=DEFAULT_PATH, overr
     the issuer defaults to the origin of that URL, which is where a swarm-mcp running the
     builtin authorization server on the same host answers. An issuer set explicitly
     (--issuer, $TANGENTSWARM_AUTH_ISSUER or mcp-auth.yaml) wins."""
+    from . import auth as A
     from .http_app import build_http_app as build
     from .http_app import configured, resolve_mode
 
     global API_KEY_MODE
     overrides = dict(overrides or {})
     resource = overrides.get('resource_url') or os.environ.get(ENV_PUBLIC_URL) \
-        or f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}{path}"
+        or A.local_origin(host, port) + path
     overrides['resource_url'] = resource
     overrides['audience'] = overrides.get('audience') or resource
     if resolve_mode(http_profile(), overrides) == 'external' and not (

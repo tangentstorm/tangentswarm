@@ -67,6 +67,14 @@ JWT_ALGORITHMS = ['RS256', 'RS384', 'RS512', 'PS256', 'PS384', 'PS512',
 # ---------------------------------------------------------------------------
 # configuration
 
+def local_origin(host, port):
+    if host in ('0.0.0.0', '::'):
+        host = '127.0.0.1'
+    elif ':' in host and not host.startswith('['):
+        host = f'[{host}]'
+    return f'http://{host}:{port}'
+
+
 def config_file():
     return paths.config_dir() / 'mcp-auth.yaml'
 
@@ -139,7 +147,7 @@ def load_auth_config(host='127.0.0.1', port=8765, path='/mcp', overrides=None):
 
     known = {f for f in AuthConfig.__dataclass_fields__}
     cfg = AuthConfig(**{k: v for k, v in data.items() if k in known})
-    base = f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}"
+    base = local_origin(host, port)
     if not cfg.resource_url:
         cfg.resource_url = base + path
     if not cfg.issuer_url and cfg.mode == 'builtin':
