@@ -160,6 +160,17 @@ def _has_input_box(screen, glyph):
     return len(bars) >= 2 and any(l.lstrip().startswith(glyph) for l in lines[bars[-2] + 1:bars[-1]])
 
 
+def _codex_input_live(screen):
+    """True if Codex's live › prompt is up: the last › line is not a numbered option of
+    one of its dialogs ("› 1. Trust and continue") and no option follows it."""
+    lines = screen.split('\n')
+    for i in range(len(lines) - 1, -1, -1):
+        if '›' in lines[i]:
+            menu = re.compile(r'^\s*›?\s*\d+\.\s')
+            return not any(menu.match(l) for l in lines[i:])
+    return False
+
+
 def blocking_screen(screen, agent=None):
     """Return {'kind', 'agent', 'lines', 'hint'} if the screen shows a first-run or other
     blocking screen (trust, theme, login, API key, bypass confirmation, update) that
@@ -168,6 +179,8 @@ def blocking_screen(screen, agent=None):
     a = 'codex' if 'codex' in a else a
     if a in ('claude', 'muse', 'gemini') and _has_input_box(screen, '>' if a == 'gemini' else '❯'):
         return None     # the normal input box is up, so any matching text is in the transcript
+    if a == 'codex' and _codex_input_live(screen):
+        return None
     lines = [l.rstrip() for l in screen.split('\n') if l.strip()][-BLOCKING_WINDOW:]
     hay = '\n'.join(lines).lower()
     for kind, only, phrases in BLOCKING_SCREENS:

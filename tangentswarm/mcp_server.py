@@ -200,7 +200,7 @@ async def start_agent(agent: registry.AgentName, repo: str, branch: str, session
     (reused=true) instead of starting another. window_name is kebab-case, default
     '<agent>-<branch>'. The window closes when the agent exits. Before launch the worktree
     is marked trusted for the agent ('trust' in the result; Claude and Codex config, Muse
-    flag). 'startup' reports whether the agent reached its prompt or stopped on a named
+    flag; status 'reused' with the current state when the agent was already running). 'startup' reports whether the agent reached its prompt or stopped on a named
     first-run screen (startup.blocked.kind: trust_prompt, theme_picker, login,
     api_key_prompt, bypass_permissions_confirm, update_prompt)."""
     try:

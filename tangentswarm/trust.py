@@ -62,7 +62,7 @@ def config_lock(path, timeout=None, stale=None, sleep=time.sleep, clock=time.tim
     so Claude Code and other tangentswarm processes wait for us and we wait for them."""
     timeout = LOCK_TIMEOUT if timeout is None else timeout
     stale = LOCK_STALE if stale is None else stale
-    lock = path + '.lock'
+    lock = os.path.realpath(path) + '.lock'    # beside the target, as proper-lockfile does
     deadline = clock() + timeout
     while True:
         try:
@@ -260,6 +260,18 @@ def is_trusted(agent, workdir):
     except (OSError, ValueError, AttributeError):
         return None
     return None
+
+
+def trust_state(agent, workdir):
+    """Report workdir's current trust for `agent` without writing anything (used when
+    start_agent reuses a running agent)."""
+    if agent == 'muse':
+        return {'agent': agent, 'method': 'flag', 'flag': '--trust-workspace', 'status': 'reused'}
+    if agent not in ('claude', 'codex'):
+        return {'agent': agent, 'method': None, 'status': 'unsupported'}
+    config = claude_config_path() if agent == 'claude' else codex_config_path()
+    return _result(agent, config, os.path.realpath(workdir), 'reused',
+                   trusted=is_trusted(agent, workdir))
 
 
 def pretrust(agent, workdir):

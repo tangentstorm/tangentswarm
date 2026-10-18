@@ -341,8 +341,8 @@ through `tangentswarm/worktrees.py`, so they behave the same.
   `origin/<branch>` if that exists, else creates a new branch (no upstream) from the
   up-to-date default branch. The default branch itself is refused.
 - **Retrying is safe.** An existing worktree for the branch is reused. If a live agent of
-  the same kind is already in it, `start_agent` returns that pane (`reused: true`) instead
-  of starting another. A different agent there is refused. Operations on one repo are
+  the same kind is already in it, `start_agent` returns that pane (`reused: true`, with
+  `trust.status: reused` and its current trust state) instead of starting another. A different agent there is refused. Operations on one repo are
   serialised by a lock file in its git dir.
 - **Removal.** `remove_worktree` refuses if a tmux pane or any process has its cwd in the
   worktree, or if the worktree has uncommitted or untracked changes. There is no force

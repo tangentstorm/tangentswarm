@@ -521,6 +521,9 @@ def _watch_startup(pane_id, agent, wait=None):
 
 def _trust_miss(agent, path, result):
     """Explain why an agent asked about trust although its entry was written."""
+    if result.get('method') == 'flag':
+        return (f"the agent was started with {result['flag']} but still asked; its CLI may "
+                f"not support the flag any more. Accept the dialog by hand")
     if trust.is_trusted(agent, path) is False:
         # e.g. a Claude Code exiting at that moment writes back the copy it read at startup
         return (f"the trust entry was written but is no longer in {result['config']}; another "
@@ -549,7 +552,8 @@ def spawn_agent(agent, repo, branch, session='agents', window_name=None, top=Non
         if same:
             return {'agent': agent, 'argv': argv, 'cwd': wt['path'], 'session': same[0]['target'].split(':')[0],
                     'window_name': same[0]['window_name'], 'pane': same[0], 'reused': True,
-                    'worktree': wt, 'startup': _watch_startup(same[0]['pane_id'], agent, wait=0)}
+                    'worktree': wt, 'trust': trust.trust_state(agent, wt['path']),
+                    'startup': _watch_startup(same[0]['pane_id'], agent, wait=0)}
         if live:
             raise WorktreeError(f"{live[0]['agent']} is already working in {wt['path']} "
                                 f"({live[0]['pane_id']}); one agent per worktree")

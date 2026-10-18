@@ -151,6 +151,23 @@ def test_claude_lock_is_released_after_a_held_lock_clears(claude_json, wt):
     assert trust.trust_claude(str(wt))['status'] == 'trusted'
 
 
+def test_claude_lock_sits_beside_a_symlinked_config(home, wt, monkeypatch):
+    """proper-lockfile resolves symlinks, so Claude locks beside the target; so must we."""
+    (home / 'dotfiles').mkdir()
+    target = home / 'dotfiles' / 'claude.json'
+    target.write_text(json.dumps(CLAUDE_JSON))
+    (home / '.claude.json').symlink_to(target)
+    lock = Path(str(target) + '.lock')
+    lock.mkdir()                                     # Claude Code holds the target's lock
+    monkeypatch.setattr(trust, 'LOCK_TIMEOUT', 0.3)
+    out = trust.trust_claude(str(wt))
+    assert out['status'] == 'skipped' and 'timed out' in out['warning']
+    lock.rmdir()
+    assert trust.trust_claude(str(wt))['status'] == 'trusted'
+    assert (home / '.claude.json').is_symlink() and not Path(str(home / '.claude.json') + '.lock').exists()
+    assert json.loads(target.read_text())['projects'][str(wt.resolve())] == {'hasTrustDialogAccepted': True}
+
+
 def test_claude_concurrent_writers_lose_nothing(claude_json, tmp_path):
     """Many tangentswarm launches plus a Claude-like writer (read, change its own key,
     write under the same lock) racing on one file."""
@@ -365,6 +382,27 @@ def test_spawn_warns_when_the_trust_entry_was_removed(claude_json, claude_bin, t
     assert trust.is_trusted('gemini', str(top / 'proj.feat')) is None
 
 
+def test_spawn_warns_when_a_trust_flag_did_not_work(top, monkeypatch):
+    monkeypatch.setattr(registry, 'launch_agent', lambda agent, path, **kw: {
+        'agent': agent, 'pane': {'pane_id': '%7'},
+        'trust': {'agent': agent, 'method': 'flag', 'flag': '--trust-workspace', 'status': 'trusted'}})
+    monkeypatch.setattr(registry, 'launch_argv', lambda agent: ['muse'])
+    monkeypatch.setattr(worktrees, '_watch_startup', lambda pane, agent, wait=None:
+                        {'state': 'blocked', 'blocked': {'kind': 'trust_prompt'}})
+    out = worktrees.spawn_agent('muse', 'proj', 'feat', run=Recorder())
+    assert out['startup']['state'] == 'blocked' and '--trust-workspace' in out['trust']['warning']
+
+
+def test_spawn_reports_trust_when_reusing_an_agent(claude_json, claude_bin, top, monkeypatch):
+    worktrees.spawn_agent('claude', 'proj', 'feat', run=Recorder())
+    live = [{'pane_id': '%5', 'target': 'agents:2', 'window_name': 'claude-feat', 'agent': 'claude'}]
+    monkeypatch.setattr(worktrees, '_live_agents', lambda path: live)
+    out = worktrees.spawn_agent('claude', 'proj', 'feat', run=Recorder())
+    assert out['reused'] is True
+    assert out['trust']['status'] == 'reused' and out['trust']['trusted'] is True
+    assert out['trust']['key'] == str((top / 'proj.feat').resolve())
+
+
 def test_spawn_warns_when_the_agent_reads_another_config(claude_json, claude_bin, top, monkeypatch):
     monkeypatch.setattr(worktrees, '_watch_startup', lambda pane, agent, wait=None:
                         {'state': 'blocked', 'blocked': {'kind': 'trust_prompt'}})
@@ -418,6 +456,17 @@ def test_a_transcript_quoting_a_dialog_is_not_blocked():
     trust_text = agents.strip_ansi((FIX / 'claude_trust.ansi').read_text())
     ready = agents.strip_ansi((FIX / 'claude_ready.ansi').read_text())
     assert agents.blocking_screen(trust_text + '\n' + ready, 'claude') is None
+
+
+def test_a_codex_transcript_quoting_a_dialog_is_not_blocked():
+    ready = agents.strip_ansi((FIX / 'codex_ready.ansi').read_text()).split('\n')
+    at = next(i for i, l in enumerate(ready) if l.lstrip().startswith('›'))
+    quoted = ready[:at] + ['• The README says: Trust this folder? Pick "Trust and continue".',
+                           '  Do you trust this folder?'] + ready[at:]
+    assert agents.blocking_screen('\n'.join(quoted), 'codex') is None
+    trust_screen = agents.strip_ansi((FIX / 'codex_trust.ansi').read_text())
+    moved = trust_screen.replace('› 1. Trust', '  1. Trust').replace('  2. Quit', '› 2. Quit')
+    assert agents.blocking_screen(moved, 'codex')['kind'] == 'trust_prompt'
 
 
 def test_kinds_for_other_agents_do_not_cross_over():
