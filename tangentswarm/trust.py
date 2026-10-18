@@ -1,0 +1,274 @@
+"""Pre-trust an agent's worktree before it starts, so no "do you trust this folder?"
+screen stalls a launch.
+
+Claude Code (checked against 2.1.302) has no flag or env var that trusts a folder for an
+interactive session. It keeps trust in its global config ($CLAUDE_CONFIG_DIR/.claude.json,
+else ~/.claude.json) as projects[<path>].hasTrustDialogAccepted. For a linked worktree it
+accepts either the main repo's root (the key it writes when you accept the dialog there)
+or any directory from the cwd up to the worktree root. It never looks above the git
+root, so trusting ~/ver does not cover ~/ver/<repo>.<branch>. We trust the worktree's
+real path only, which does not widen trust to the plain checkout.
+
+Claude rewrites that file itself, under a proper-lockfile lock: a directory named
+<config>.lock, treated as stale after 10s. We take the same lock, re-read, set only our
+key, write a temp file in the same directory with the same mode, fsync and os.replace.
+A missing or unparsable file is never written; the caller gets a warning instead.
+
+Codex (checked against 0.157) keeps trust in $CODEX_HOME/config.toml (default ~/.codex)
+as [projects."<path>"] trust_level = "trusted", and also accepts the worktree path.
+There is no TOML writer in the stdlib, so a missing table is appended as text, and the
+result is parsed again to check that nothing else changed before it is written.
+
+Muse gets --trust-workspace on its command line (see registry.py). Gemini and Grok are
+not pre-trusted; agents.blocking_screen() still reports their trust screens.
+"""
+import json
+import os
+import stat
+import tempfile
+import time
+from contextlib import contextmanager
+
+try:
+    import tomllib
+except ImportError:          # Python 3.10: Codex is then not pre-trusted
+    tomllib = None
+
+LOCK_STALE = 10.0       # proper-lockfile's default, which Claude Code uses
+LOCK_TIMEOUT = 15.0
+LOCK_POLL = 0.05
+
+
+class TrustError(RuntimeError):
+    """The config could not be updated safely; it was left as it was."""
+
+
+def claude_config_path():
+    base = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~')
+    return os.path.join(base, '.claude.json')
+
+
+def codex_config_path():
+    base = os.environ.get('CODEX_HOME') or os.path.join(os.path.expanduser('~'), '.codex')
+    return os.path.join(base, 'config.toml')
+
+
+# ---------------------------------------------------------------------------
+# locking and atomic replacement
+
+@contextmanager
+def config_lock(path, timeout=None, stale=None, sleep=time.sleep, clock=time.time):
+    """Hold <path>.lock the way proper-lockfile does (mkdir, stale after `stale` seconds),
+    so Claude Code and other tangentswarm processes wait for us and we wait for them."""
+    timeout = LOCK_TIMEOUT if timeout is None else timeout
+    stale = LOCK_STALE if stale is None else stale
+    lock = path + '.lock'
+    deadline = clock() + timeout
+    while True:
+        try:
+            os.mkdir(lock)
+            break
+        except FileExistsError:
+            try:
+                age = clock() - os.stat(lock).st_mtime
+            except FileNotFoundError:
+                continue
+            if age > stale:
+                try:
+                    os.rmdir(lock)      # a holder that died; proper-lockfile does the same
+                except OSError:
+                    pass
+                continue
+            if clock() >= deadline:
+                raise TrustError(f"timed out after {timeout:.0f}s waiting for {lock}")
+            sleep(LOCK_POLL)
+    try:
+        yield
+    finally:
+        try:
+            os.rmdir(lock)
+        except OSError:
+            pass
+
+
+def _fingerprint(st):
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _replace(real, text, st):
+    """Write text next to `real` with its mode, fsync, and os.replace it, unless the file
+    changed since it was read (st)."""
+    d = os.path.dirname(real)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix='.' + os.path.basename(real) + '.', suffix='.tmp')
+    try:
+        os.fchmod(fd, stat.S_IMODE(st.st_mode))
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        if _fingerprint(os.stat(real)) != _fingerprint(st):
+            raise TrustError(f"{real} changed while it was being updated; left as it was")
+        os.replace(tmp, real)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+    dfd = os.open(d, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def _read(path):
+    """Return (realpath, stat, text). Raises FileNotFoundError."""
+    real = os.path.realpath(path)
+    with open(real, encoding='utf-8') as f:
+        st = os.fstat(f.fileno())
+        return real, st, f.read()
+
+
+def _result(agent, path, key, status, **kw):
+    return {'agent': agent, 'method': 'config', 'config': path, 'key': key, 'status': status, **kw}
+
+
+# ---------------------------------------------------------------------------
+# Claude Code
+
+def trust_claude(workdir, config=None):
+    """Set projects[realpath(workdir)].hasTrustDialogAccepted = true in Claude's global
+    config, touching nothing else. Returns a dict whose status is 'trusted',
+    'already_trusted' or 'skipped' (with a 'warning'); never raises for a bad config."""
+    path = config or claude_config_path()
+    key = os.path.realpath(workdir)
+    try:
+        with config_lock(path):
+            try:
+                real, st, text = _read(path)
+            except FileNotFoundError:
+                return _result('claude', path, key, 'skipped', warning=(
+                    f"{path} does not exist (Claude Code has never run as this user?); "
+                    f"not creating it, so expect first-run screens"))
+            try:
+                data = json.loads(text)
+            except ValueError as e:
+                return _result('claude', path, key, 'skipped',
+                               warning=f"{path} is not valid JSON ({e}); left untouched")
+            projects = data.get('projects', {}) if isinstance(data, dict) else None
+            entry = projects.get(key, {}) if isinstance(projects, dict) else None
+            if not isinstance(entry, dict):
+                return _result('claude', path, key, 'skipped', warning=(
+                    f"{path} does not have the expected shape (an object with a 'projects' "
+                    f"object); left untouched"))
+            if entry.get('hasTrustDialogAccepted') is True:
+                return _result('claude', path, key, 'already_trusted')
+            data.setdefault('projects', projects)[key] = {**entry, 'hasTrustDialogAccepted': True}
+            out = json.dumps(data, indent=2, ensure_ascii=False)
+            if text.endswith('\n'):
+                out += '\n'
+            _replace(real, out, st)
+    except (TrustError, OSError) as e:
+        return _result('claude', path, key, 'skipped', warning=f"could not update {path}: {e}")
+    return _result('claude', path, key, 'trusted')
+
+
+# ---------------------------------------------------------------------------
+# Codex
+
+def _toml_string(s):
+    if any(ord(c) < 0x20 or c == '\x7f' for c in s):
+        raise TrustError(f"path {s!r} has control characters")
+    return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def trust_codex(workdir, config=None):
+    """Add [projects."<realpath(workdir)>"] trust_level = "trusted" to Codex's config.toml.
+    An existing entry for the path is never changed, so an explicit "untrusted" stays."""
+    path = config or codex_config_path()
+    key = os.path.realpath(workdir)
+    if tomllib is None:
+        return _result('codex', path, key, 'skipped', warning='needs Python 3.11+ (tomllib)')
+    try:
+        with config_lock(path):
+            try:
+                real, st, text = _read(path)
+            except FileNotFoundError:
+                if not os.path.isdir(os.path.dirname(path)):
+                    return _result('codex', path, key, 'skipped', warning=(
+                        f"{os.path.dirname(path)} does not exist (Codex has never run as this "
+                        f"user?); not creating it"))
+                real, st, text = None, None, ''
+            try:
+                data = tomllib.loads(text)
+            except tomllib.TOMLDecodeError as e:
+                return _result('codex', path, key, 'skipped',
+                               warning=f"{path} is not valid TOML ({e}); left untouched")
+            projects = data.get('projects', {})
+            entry = projects.get(key) if isinstance(projects, dict) else None
+            if entry is not None or not isinstance(projects, dict):
+                level = entry.get('trust_level') if isinstance(entry, dict) else None
+                if level == 'trusted':
+                    return _result('codex', path, key, 'already_trusted')
+                return _result('codex', path, key, 'skipped', warning=(
+                    f"{path} already has a projects entry for {key} "
+                    f"(trust_level={level!r}); left as the user set it"))
+            sep = '' if not text or text.endswith('\n\n') else ('\n' if text.endswith('\n') else '\n\n')
+            out = f'{text}{sep}[projects.{_toml_string(key)}]\ntrust_level = "trusted"\n'
+            try:
+                new = tomllib.loads(out)
+            except tomllib.TOMLDecodeError as e:
+                return _result('codex', path, key, 'skipped', warning=(
+                    f"appending a [projects] table to {path} would not parse ({e}); "
+                    f"left untouched"))
+            check = dict(new)
+            check['projects'] = {k: v for k, v in check['projects'].items() if k != key}
+            if not check['projects'] and 'projects' not in data:
+                del check['projects']
+            if check != data or new['projects'].get(key) != {'trust_level': 'trusted'}:
+                return _result('codex', path, key, 'skipped', warning=(
+                    f"appending to {path} would change other settings; left untouched"))
+            if real is None:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    f.write(out)
+                    f.flush()
+                    os.fsync(f.fileno())
+            else:
+                _replace(real, out, st)
+    except (TrustError, OSError) as e:
+        return _result('codex', path, key, 'skipped', warning=f"could not update {path}: {e}")
+    return _result('codex', path, key, 'trusted')
+
+
+# ---------------------------------------------------------------------------
+
+def is_trusted(agent, workdir):
+    """Re-read the agent's config: True or False for whether workdir's entry is there, or
+    None if that cannot be told (unsupported agent, unreadable config)."""
+    key = os.path.realpath(workdir)
+    try:
+        if agent == 'claude':
+            with open(claude_config_path(), encoding='utf-8') as f:
+                entry = json.load(f).get('projects', {}).get(key, {})
+            return entry.get('hasTrustDialogAccepted') is True
+        if agent == 'codex' and tomllib is not None:
+            with open(codex_config_path(), 'rb') as f:
+                entry = tomllib.load(f).get('projects', {}).get(key, {})
+            return entry.get('trust_level') == 'trusted'
+    except (OSError, ValueError, AttributeError):
+        return None
+    return None
+
+
+def pretrust(agent, workdir):
+    """Trust workdir for `agent` before it starts. Never raises: a config that cannot be
+    updated safely is reported in the result's 'warning' and the launch goes ahead."""
+    if agent == 'claude':
+        return trust_claude(workdir)
+    if agent == 'codex':
+        return trust_codex(workdir)
+    if agent == 'muse':
+        return {'agent': agent, 'method': 'flag', 'flag': '--trust-workspace', 'status': 'trusted'}
+    return {'agent': agent, 'method': None, 'status': 'unsupported'}

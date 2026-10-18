@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
-from . import tmux
+from . import tmux, trust
 
 AgentName = Literal['claude', 'muse', 'grok', 'gemini', 'codex']
 
@@ -164,6 +164,8 @@ def default_window_name(agent, cwd):
 def launch_agent(agent, cwd, session='agents', window_name=None, run=None):
     """Start a registered agent in a new window of `session` (created if missing), in cwd.
     The argv is passed to tmux as separate arguments, so tmux execs it without a shell.
+    The agent's trust for cwd is recorded first (see trust.py), so it does not stop on a
+    "trust this folder?" screen; the result's 'trust' says what was done or why not.
     Internal: callers go through worktrees.spawn_agent, which gives every agent its own
     worktree and never starts one in the plain checkout."""
     argv = launch_argv(agent)
@@ -171,6 +173,7 @@ def launch_agent(agent, cwd, session='agents', window_name=None, run=None):
     validate_session(session)
     name = validate_window_name(window_name) if window_name else default_window_name(agent, real)
     run = run or tmux.run_checked
+    trusted = trust.pretrust(agent, real)
     if tmux.has_session(session):
         cmd = [tmux.TMUX, 'new-window', '-d', '-P', '-F', tmux.PANE_FORMAT,
                '-t', f'{session}:', '-n', name, '-c', real]
@@ -180,7 +183,7 @@ def launch_agent(agent, cwd, session='agents', window_name=None, run=None):
     pane = tmux.parse_format_output(run(cmd + ['--', *argv]).stdout, tmux.PANE_FIELDS)
     info = pane[0] if pane else {}
     return {'agent': agent, 'argv': argv, 'cwd': real, 'session': session, 'window_name': name,
-            'pane': info}
+            'pane': info, 'trust': trusted}
 
 
 # ---------------------------------------------------------------------------

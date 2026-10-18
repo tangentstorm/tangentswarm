@@ -198,7 +198,11 @@ async def start_agent(agent: registry.AgentName, repo: str, branch: str, session
     .swarm.yaml can list paths to symlink or copy into the worktree. Retrying is safe: an
     existing worktree is reused, and a live agent of the same kind already in it is returned
     (reused=true) instead of starting another. window_name is kebab-case, default
-    '<agent>-<branch>'. The window closes when the agent exits."""
+    '<agent>-<branch>'. The window closes when the agent exits. Before launch the worktree
+    is marked trusted for the agent ('trust' in the result; Claude and Codex config, Muse
+    flag). 'startup' reports whether the agent reached its prompt or stopped on a named
+    first-run screen (startup.blocked.kind: trust_prompt, theme_picker, login,
+    api_key_prompt, bypass_permissions_confirm, update_prompt)."""
     try:
         return await anyio.to_thread.run_sync(
             lambda: worktrees.spawn_agent(agent, repo, branch, session=session,
@@ -229,7 +233,8 @@ async def remove_worktree(repo: str, branch: str, delete_branch: bool = False) -
 async def agent_status(target: str) -> dict:
     """Report which coding agent (claude, codex, gemini, opencode and others) runs in a pane,
     whether its input prompt is blank, its current command and path, and the last screen
-    lines. Read-only."""
+    lines. 'blocked' names a first-run or blocking screen (trust, theme, login, API key,
+    bypass confirmation, update) the agent is stuck on, or is null. Read-only."""
     try:
         return await anyio.to_thread.run_sync(agents.agent_status, target)
     except tmux.TmuxError as e:
@@ -240,7 +245,8 @@ async def agent_status(target: str) -> dict:
 async def pane_ready(target: str, probe: bool = False) -> dict:
     """Report whether the agent's input prompt is empty. probe=true uses scialect's space probe
     (type a space, check, then backspace) to see past placeholder text. The probe needs the
-    shell scope."""
+    shell scope. On a blocking screen (see agent_status) ready is false, 'blocked' names it,
+    and nothing is typed."""
     if probe:
         require_scope(SCOPE_SHELL)
     try:
@@ -270,7 +276,8 @@ async def tell_agent(target: str, text: str, new_conversation: bool = False,
     """Send a message to a coding agent the way scialect's tell-worker does. It makes sure the
     prompt is empty with the space probe and refuses if someone is typing. Then it optionally
     sends '/new', presses Enter and waits 10s. Last, it types the text literally, waits 0.5s
-    and presses Enter."""
+    and presses Enter. It refuses, typing nothing, while the agent is on a first-run or
+    blocking screen (trust, theme, login, ...), even with require_empty_prompt=false."""
     try:
         return await anyio.to_thread.run_sync(lambda: agents.tell_agent(
             target, text, new_conversation=new_conversation, require_empty_prompt=require_empty_prompt))

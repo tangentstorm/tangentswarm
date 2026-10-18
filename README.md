@@ -349,11 +349,52 @@ through `tangentswarm/worktrees.py`, so they behave the same.
   option. `delete_branch` deletes the branch only if it is merged into `origin/<default>`.
   The plain checkout is never removed.
 
+- **Pre-trusted, then watched.** Before the agent starts, its worktree is marked trusted
+  so no "do you trust this folder?" screen stalls it (see below). After the launch,
+  `start_agent` watches the pane for a few seconds and reports `startup.state`: `ready`,
+  `starting`, `exited` or `blocked`, with `startup.blocked.kind` naming the screen.
+
 ```sh
 swarm -c start-agent claude platform minavo/auth-fix [--session agents] [--window NAME]
 swarm -c worktrees [platform] [--json]       # repos, worktrees, dirty?, panes working in each
 swarm -c remove-worktree platform minavo/auth-fix [--delete-branch]
 ```
+
+### Trust and first-run screens
+
+`tangentswarm/trust.py` records trust for the worktree's real path before the agent
+starts. The `start_agent` result's `trust` says what it did (`trusted`,
+`already_trusted`, `skipped` with a `warning`, or `unsupported`). A failure never blocks
+the launch.
+
+| agent | how | where |
+| --- | --- | --- |
+| `claude` | `projects[<worktree>].hasTrustDialogAccepted = true` | `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json` |
+| `codex` | `[projects."<worktree>"] trust_level = "trusted"` | `$CODEX_HOME/config.toml`, else `~/.codex/config.toml` |
+| `muse` | `--trust-workspace` flag | |
+| `gemini`, `grok` | not pre-trusted (screens are still detected) | |
+
+Claude Code (checked against 2.1.302) has no flag or env var that trusts a folder for an
+interactive session. For a linked worktree it accepts trust recorded for the main repo
+root (the key it writes when you accept the dialog there) or for any directory from the
+cwd up to the worktree root. It never looks above the git root, so trusting `~/ver` does
+not cover `~/ver/<repo>.<branch>`. swarm trusts only the worktree, not the plain
+checkout. Claude rewrites its config itself, so the update takes the same lock Claude
+uses (a `<config>.lock` directory, stale after 10s), re-reads the file, sets only that
+key, and replaces the file atomically (temp file in the same directory, same mode, fsync,
+`os.replace`). A file that is missing, unparsable or the wrong shape is never written.
+For Codex, an existing entry for the path (for example an explicit `"untrusted"`) is left
+alone. The config written is the one for swarm's own `HOME` (or `CLAUDE_CONFIG_DIR` /
+`CODEX_HOME`), while the agent inherits the tmux server's environment. If those differ,
+the agent still asks, and `trust.warning` says so.
+
+Any remaining first-run or blocking screen is reported by name as `blocked: {kind, lines,
+hint}` in `start_agent` (under `startup`), `agent_status`, `pane_ready` and
+`wait_for_idle`. `tell_agent` refuses with "agent is on the <kind> screen" before typing
+anything, even with `require_empty_prompt=false`, because typed text would answer the
+dialog. The kinds are `trust_prompt`, `theme_picker`, `login`, `api_key_prompt`,
+`bypass_permissions_confirm` and `update_prompt`. The screen text comes from captures of
+Claude Code 2.1.302 and Codex 0.157.0 in `tests/fixtures`.
 
 ### `.swarm.yaml`: sharing big directories
 
@@ -422,13 +463,13 @@ expose port 5002 or 5003.
 | `capture_pane(target, history_lines?, escapes?)` | read | pane text (`-S -N` scrollback, `-e` escapes) |
 | `send_keys(target, text, enter=true, literal=true)` | shell | agent panes only: literal text, 0.5s, separate Enter; `literal=false` for key names |
 | `list_agents` | read | the registered agents: installed?, binary, exact argv, adapter level; the agent root |
-| `start_agent(agent, repo, branch, session="agents", window_name?)` | shell | start a registered agent (enum) in its own worktree `<root>/<repo>.<branch>` (see [One worktree per agent](#one-worktree-per-agent)) |
+| `start_agent(agent, repo, branch, session="agents", window_name?)` | shell | start a registered agent (enum) in its own pre-trusted worktree `<root>/<repo>.<branch>` (see [One worktree per agent](#one-worktree-per-agent)); reports `trust` and `startup` (any [blocking screen](#trust-and-first-run-screens)) |
 | `list_worktrees(repo?)` | read | repos under the agent root and their worktrees: branch, dirty, on-layout, panes working in each |
 | `remove_worktree(repo, branch, delete_branch=false)` | shell | remove a clean, unused worktree; delete the branch only if merged |
-| `agent_status(target)` | read | registered agent in the pane's foreground, typeable?, prompt blank?, last lines |
-| `pane_ready(target, probe=false)` | read (probe: shell) | is the agent's prompt empty |
+| `agent_status(target)` | read | registered agent in the pane's foreground, typeable?, blocked (named screen)?, prompt blank?, last lines |
+| `pane_ready(target, probe=false)` | read (probe: shell) | is the agent's prompt empty; `blocked` names a first-run screen (never probed) |
 | `wait_for_idle(target, timeout_sec=120, poll_ms, settle_sec)` | read | screen stable + prompt blank |
-| `tell_agent(target, text, new_conversation?, require_empty_prompt=true)` | shell | agent panes only: tell-worker send sequence |
+| `tell_agent(target, text, new_conversation?, require_empty_prompt=true)` | shell | agent panes only: tell-worker send sequence; refuses on a blocking screen |
 | `swarm_status(control_dir)` | read | local-status rows |
 | `tell_worker(control_dir, worker, verb, arg?)` | shell | state-machine handoff (agent panes only) |
 | `cloud_list_sessions` | read | claude.ai/code sidebar sessions (needs `swarm cloud serve`) |
