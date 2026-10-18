@@ -470,14 +470,38 @@ def test_a_codex_transcript_quoting_a_dialog_is_not_blocked():
 
 
 def test_generic_trust_phrases_need_a_live_menu():
-    """Grok has no input-box check, so a quoted question alone must not block it."""
+    """Agents with no specific screens only match a generic question with a menu under it."""
     dialog = 'Do you trust this folder?\n> 1. Yes\n  2. No'
-    assert agents.blocking_screen(dialog, 'grok')['kind'] == 'trust_prompt'
+    assert agents.blocking_screen(dialog, 'gemini')['kind'] == 'trust_prompt'
     assert agents.blocking_screen(dialog, None)['kind'] == 'trust_prompt'
-    chat = 'user: what does "Do you trust this folder?" mean?\ngrok: It is the first-run dialog.\n> '
-    assert agents.blocking_screen(chat, 'grok') is None
+    chat = 'user: what does "Do you trust this folder?" mean?\nmodel: It is the first-run dialog.\n> '
+    assert agents.blocking_screen(chat, None) is None
     scrolled = dialog + '\n' + '\n'.join(f'line {i}' for i in range(20)) + '\n> '
-    assert agents.blocking_screen(scrolled, 'grok') is None
+    assert agents.blocking_screen(scrolled, None) is None
+
+
+def test_grok_screens():
+    """Captured from Grok 1.0.62: its trust question has y/n keys, not numbered options."""
+    for name, kind in [('grok_trust.ansi', 'trust_prompt'), ('grok_login.ansi', 'login')]:
+        raw = (FIX / name).read_text()
+        assert agents.blocking_screen(agents.strip_ansi(raw), 'grok')['kind'] == kind
+        assert agents.wait_for_idle('%1', agent='grok', capture=lambda: raw, settle=0,
+                                    sleep=lambda s: None)['blocked']['kind'] == kind
+    for name in ('grok_ready.ansi', 'grok_typed.ansi'):     # the opt-in banner does not block
+        assert agents.blocking_screen(agents.strip_ansi((FIX / name).read_text()), 'grok') is None
+    ready = agents.strip_ansi((FIX / 'grok_ready.ansi').read_text()).split('\n')
+    at = next(i for i, l in enumerate(ready) if '❯' in l) - 1
+    quoted = ready[:at] + ['  Grok asked "Do you trust the contents of this directory?"',
+                           '  and I picked Yes, proceed.'] + ready[at:]
+    assert agents.blocking_screen('\n'.join(quoted), 'grok') is None
+
+
+def test_grok_is_trusted_by_flag(top, monkeypatch):
+    assert '--trust' in registry.REGISTRY['grok'].flags
+    out = trust.pretrust('grok', str(top / 'proj'))
+    assert out == {'agent': 'grok', 'method': 'flag', 'flag': '--trust', 'status': 'trusted', 'scope': 'repo'}
+    for agent, flag in trust.TRUST_FLAGS.items():
+        assert flag in registry.REGISTRY[agent].flags
 
 
 def test_kinds_for_other_agents_do_not_cross_over():

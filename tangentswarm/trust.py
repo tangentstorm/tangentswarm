@@ -19,8 +19,11 @@ as [projects."<path>"] trust_level = "trusted", and also accepts the worktree pa
 There is no TOML writer in the stdlib, so a missing table is appended as text, and the
 result is parsed again to check that nothing else changed before it is written.
 
-Muse gets --trust-workspace on its command line (see registry.py). Gemini and Grok are
-not pre-trusted; agents.blocking_screen() still reports their trust screens.
+Muse gets --trust-workspace and Grok --trust on their command lines (see registry.py).
+Grok (checked against 1.0.62) keeps trust in $GROK_HOME/trusted_folders.toml, keyed by
+the main repo root; it ignores an entry for the worktree path, so --trust there trusts
+the repo, its plain checkout and every worktree of it. Gemini is not pre-trusted;
+agents.blocking_screen() still reports its trust screen.
 """
 import json
 import os
@@ -262,11 +265,21 @@ def is_trusted(agent, workdir):
     return None
 
 
+TRUST_FLAGS = {'muse': '--trust-workspace', 'grok': '--trust'}    # must match registry flags
+
+
+def _flag_result(agent, status):
+    out = {'agent': agent, 'method': 'flag', 'flag': TRUST_FLAGS[agent], 'status': status}
+    if agent == 'grok':
+        out['scope'] = 'repo'      # Grok trusts the main repo root, not just the worktree
+    return out
+
+
 def trust_state(agent, workdir):
     """Report workdir's current trust for `agent` without writing anything (used when
     start_agent reuses a running agent)."""
-    if agent == 'muse':
-        return {'agent': agent, 'method': 'flag', 'flag': '--trust-workspace', 'status': 'reused'}
+    if agent in TRUST_FLAGS:
+        return _flag_result(agent, 'reused')
     if agent not in ('claude', 'codex'):
         return {'agent': agent, 'method': None, 'status': 'unsupported'}
     config = claude_config_path() if agent == 'claude' else codex_config_path()
@@ -281,6 +294,6 @@ def pretrust(agent, workdir):
         return trust_claude(workdir)
     if agent == 'codex':
         return trust_codex(workdir)
-    if agent == 'muse':
-        return {'agent': agent, 'method': 'flag', 'flag': '--trust-workspace', 'status': 'trusted'}
+    if agent in TRUST_FLAGS:
+        return _flag_result(agent, 'trusted')
     return {'agent': agent, 'method': None, 'status': 'unsupported'}

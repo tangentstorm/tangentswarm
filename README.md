@@ -372,7 +372,13 @@ the launch.
 | `claude` | `projects[<worktree>].hasTrustDialogAccepted = true` | `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json` |
 | `codex` | `[projects."<worktree>"] trust_level = "trusted"` | `$CODEX_HOME/config.toml`, else `~/.codex/config.toml` |
 | `muse` | `--trust-workspace` flag | |
-| `gemini`, `grok` | not pre-trusted (screens are still detected) | |
+| `grok` | `--trust` flag (trusts the main repo root; `trust.scope: repo`) | `$GROK_HOME/trusted_folders.toml`, else `~/.grok/trusted_folders.toml` |
+| `gemini` | not pre-trusted (screens are still detected) | |
+
+Grok (checked against 1.0.62) asks only when the repo has something trust gates, such as
+project hooks, and keys trust by the main repo root. It ignores an entry for the
+worktree path, so there is no way to trust just the worktree; `--trust` trusts the
+repo, its plain checkout and all its worktrees.
 
 Claude Code (checked against 2.1.302) has no flag or env var that trusts a folder for an
 interactive session. For a linked worktree it accepts trust recorded for the main repo
@@ -494,7 +500,7 @@ the caller cannot add arguments.
 | `muse` | `~/.local/bin/muse` (launcher; execs `muse-bin-<version>`) | `--trust-workspace` | full (❯ box between ─ bars; grey placeholder ignored; `/new`) |
 | `codex` | `~/.npm-global/bin/codex`, ... | | basic (› prompt, ported from scialect) |
 | `gemini` | `~/.npm-global/bin/gemini`, `/usr/local/bin/gemini`, ... | | basic (> prompt, ported from scialect) |
-| `grok` | `~/.grok/bin/grok` | | none: start/type only; `tell_agent` needs `require_empty_prompt=false` |
+| `grok` | `~/.grok/bin/grok` | `--trust` | none: start/type only; `tell_agent` needs `require_empty_prompt=false` |
 
 `list_agents` still lists an agent that is not installed, with `installed: false`, and
 starting it fails with "not installed". The operator can point an agent at another binary

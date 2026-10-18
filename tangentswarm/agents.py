@@ -122,7 +122,7 @@ def detector_for(agent):
 #
 # Each entry is (kind, agents it applies to or None for any, phrases that must all
 # appear, case-insensitively, in the bottom BLOCKING_WINDOW non-empty lines). The
-# Claude Code 2.1.302 and Codex 0.157.0 phrases come from the screens captured in
+# Claude Code 2.1.302, Codex 0.157.0 and Grok 1.0.62 phrases come from the screens captured in
 # tests/fixtures; the generic trust question also covers older versions and Gemini.
 
 BLOCKING_WINDOW = 30
@@ -138,6 +138,8 @@ BLOCKING_SCREENS = [
     ('api_key_prompt', {'claude'}, ('Detected a custom API key', 'Do you want to use this API key?')),
     ('bypass_permissions_confirm', {'claude'}, ('Bypass Permissions mode', 'Yes, I accept')),
     ('update_prompt', {'codex'}, ('Update available', 'Update now')),
+    ('trust_prompt', {'grok'}, ('Do you trust the contents of this directory?', 'Yes, proceed')),
+    ('login', {'grok'}, ('Approve in your browser to finish signing in',)),
 ]
 
 BLOCKING_HINTS = {
@@ -171,6 +173,12 @@ def _codex_input_live(screen):
     return False
 
 
+def _grok_input_live(screen):
+    """True if Grok's input box ('│ ❯ ...│', between ╭ and ╰ borders) is near the bottom."""
+    lines = [l for l in screen.split('\n') if l.strip()][-6:]
+    return any(re.match(r'^\s*│\s*❯', l) for l in lines) and any(l.lstrip().startswith('╰') for l in lines)
+
+
 def blocking_screen(screen, agent=None):
     """Return {'kind', 'agent', 'lines', 'hint'} if the screen shows a first-run or other
     blocking screen (trust, theme, login, API key, bypass confirmation, update) that
@@ -179,7 +187,7 @@ def blocking_screen(screen, agent=None):
     a = 'codex' if 'codex' in a else a
     if a in ('claude', 'muse', 'gemini') and _has_input_box(screen, '>' if a == 'gemini' else '❯'):
         return None     # the normal input box is up, so any matching text is in the transcript
-    if a == 'codex' and _codex_input_live(screen):
+    if a == 'codex' and _codex_input_live(screen) or a == 'grok' and _grok_input_live(screen):
         return None
     lines = [l.rstrip() for l in screen.split('\n') if l.strip()][-BLOCKING_WINDOW:]
     hay = '\n'.join(lines).lower()
@@ -200,7 +208,7 @@ _OPTION_RE = re.compile(r'^\s*[›>❯●]?\s*\d+\.\s')
 
 def _menu_below(lines, question):
     """True if the last line asking `question` sits near the bottom with numbered options
-    after it. Agents with no input-box check (Grok, unknown ones) only match the generic
+    after it. Agents with no specific screens (Gemini, unknown ones) only match the generic
     phrases this way, so the question merely appearing in their transcript does not."""
     q = question.lower()
     at = max((i for i, l in enumerate(lines) if q in l.lower()), default=-1)
@@ -694,18 +702,19 @@ def wait_for_idle(target, timeout=120.0, poll=1.0, settle=3.0, agent=None, cdir=
         info = pane_agent(target)
         agent = agent or info['agent']
         pane = info['pane_id']
-        capture = lambda: input_view(tmux.capture_pane(pane, escapes=True))  # noqa: E731
+        capture = lambda: tmux.capture_pane(pane, escapes=True)  # noqa: E731
     det = detector_for(agent)
     start = clock()
     last_hash, stable_since = None, start
     screen = ''
     while True:
-        screen = capture()
+        raw = capture()
+        screen = input_view(raw)
         h = screen_hash(screen)
         now = clock()
         if h != last_hash:
             last_hash, stable_since = h, now
-        blocked = blocking_screen(screen, agent)
+        blocked = blocking_screen(strip_ansi(raw), agent)   # dialogs may be drawn in grey (Grok)
         if blocked and now - stable_since >= settle:
             return {'target': target, 'agent': agent, 'idle': False, 'blocked': blocked,
                     'waited_sec': round(now - start, 2), 'prompt_blank': False}
