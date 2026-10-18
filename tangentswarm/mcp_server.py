@@ -169,7 +169,7 @@ async def send_keys(target: str, text: str, enter: bool = True, literal: bool = 
     tmux prefix key is refused: use tmux_action for tmux commands. The 'ctrl+b ctrl+b to
     run in background' hint on Claude Code's screen is a Claude Code shortcut, not tmux;
     C-b is refused unless allow_ctrl_b=true."""
-    why = tmux.refused_key(text, literal=literal)
+    why = tmux.refused_key(text, target, literal=literal)
     if why == 'prefix':
         raise ToolError(
             f"refusing to send {text.strip()}: it is tmux's prefix key, and send_keys goes straight "

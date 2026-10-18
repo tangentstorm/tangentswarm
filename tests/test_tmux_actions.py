@@ -181,3 +181,20 @@ def test_linked_window_acts_in_the_named_session(private_tmux):
         ['0=w2', '1=w0']
     assert t('list-windows', '-t', 'other', '-F', '#{window_index}=#{window_name}').split() == \
         ['0=o0', '5=w2']                                                  # other session untouched
+
+
+def test_prefix_is_read_for_the_targets_session(private_tmux):
+    """A session that overrides prefix/prefix2 is checked with its own keys, not the global."""
+    t = private_tmux
+    t('new-session', '-d', '-s', 'plain', '-n', 'p0', 'sleep 300')
+    t('set-option', '-g', 'prefix', 'C-r')
+    t('set-option', '-t', 'agents', 'prefix', 'C-a')
+    t('set-option', '-t', 'agents', 'prefix2', 'C-s')
+    pane = t('display', '-p', '-t', 'agents:w0', '#{pane_id}')
+    assert tmux.prefix_keys('agents:w0') == ['C-a', 'C-s'] == tmux.prefix_keys(pane)
+    assert tmux.prefix_keys('plain:p0') == ['C-r']
+    assert tmux.refused_key('C-a', 'agents:w0') == 'prefix'
+    assert tmux.refused_key('C-s', 'agents:w0') == 'prefix'
+    assert tmux.refused_key('C-r', 'agents:w0') is None          # the global, overridden here
+    assert tmux.refused_key('C-r', 'plain:p0') == 'prefix'
+    assert tmux.refused_key('C-a', 'plain:p0') is None

@@ -196,7 +196,7 @@ def test_send_keys_to_agent_pane_goes_to_the_resolved_pane(monkeypatch):
 
 def test_send_keys_refuses_lone_ctrl_b(monkeypatch):
     fake_pane(monkeypatch, CLAUDE, pane_id='%10')
-    monkeypatch.setattr(tmux, 'prefix_keys', lambda: ['C-r'])
+    monkeypatch.setattr(tmux, 'prefix_keys', lambda t: ['C-r'])
     sent = []
     monkeypatch.setattr(tmux, 'send_keys_literal', lambda t, s, enter=True: sent.append((t, s)))
     monkeypatch.setattr(tmux, 'send_keys', lambda t, k, enter=True: sent.append((t, k)) or
@@ -213,7 +213,7 @@ def test_send_keys_refuses_lone_ctrl_b(monkeypatch):
 
 def test_send_keys_refuses_the_tmux_prefix(monkeypatch):
     fake_pane(monkeypatch, CLAUDE, pane_id='%10')
-    monkeypatch.setattr(tmux, 'prefix_keys', lambda: ['C-r'])
+    monkeypatch.setattr(tmux, 'prefix_keys', lambda t: ['C-r'])
     sent = []
     monkeypatch.setattr(tmux, 'send_keys_literal', lambda t, s, enter=True: sent.append((t, s)))
     monkeypatch.setattr(tmux, 'send_keys', lambda t, k, enter=True: sent.append((t, k)) or
