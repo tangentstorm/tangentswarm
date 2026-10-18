@@ -186,9 +186,26 @@ def blocking_screen(screen, agent=None):
     for kind, only, phrases in BLOCKING_SCREENS:
         if only is not None and a and a not in only:
             continue
-        if all(p.lower() in hay for p in phrases):
-            return {'kind': kind, 'agent': agent, 'lines': lines[-12:], 'hint': BLOCKING_HINTS[kind]}
+        if not all(p.lower() in hay for p in phrases):
+            continue
+        if only is None and not _menu_below(lines, phrases[0]):
+            continue        # generic phrase quoted in a transcript, not a live dialog
+        return {'kind': kind, 'agent': agent, 'lines': lines[-12:], 'hint': BLOCKING_HINTS[kind]}
     return None
+
+
+GENERIC_DIALOG_DEPTH = 12    # a generic question must be this close to the bottom
+_OPTION_RE = re.compile(r'^\s*[›>❯●]?\s*\d+\.\s')
+
+
+def _menu_below(lines, question):
+    """True if the last line asking `question` sits near the bottom with numbered options
+    after it. Agents with no input-box check (Grok, unknown ones) only match the generic
+    phrases this way, so the question merely appearing in their transcript does not."""
+    q = question.lower()
+    at = max((i for i, l in enumerate(lines) if q in l.lower()), default=-1)
+    return at >= len(lines) - GENERIC_DIALOG_DEPTH \
+        and any(_OPTION_RE.match(l) for l in lines[at + 1:])
 
 
 # ---------------------------------------------------------------------------

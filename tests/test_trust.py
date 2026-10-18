@@ -469,6 +469,17 @@ def test_a_codex_transcript_quoting_a_dialog_is_not_blocked():
     assert agents.blocking_screen(moved, 'codex')['kind'] == 'trust_prompt'
 
 
+def test_generic_trust_phrases_need_a_live_menu():
+    """Grok has no input-box check, so a quoted question alone must not block it."""
+    dialog = 'Do you trust this folder?\n> 1. Yes\n  2. No'
+    assert agents.blocking_screen(dialog, 'grok')['kind'] == 'trust_prompt'
+    assert agents.blocking_screen(dialog, None)['kind'] == 'trust_prompt'
+    chat = 'user: what does "Do you trust this folder?" mean?\ngrok: It is the first-run dialog.\n> '
+    assert agents.blocking_screen(chat, 'grok') is None
+    scrolled = dialog + '\n' + '\n'.join(f'line {i}' for i in range(20)) + '\n> '
+    assert agents.blocking_screen(scrolled, 'grok') is None
+
+
 def test_kinds_for_other_agents_do_not_cross_over():
     codex_update = agents.strip_ansi((FIX / 'codex_update.ansi').read_text())
     assert agents.blocking_screen(codex_update, 'claude') is None
