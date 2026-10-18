@@ -475,8 +475,11 @@ with `TANGENTSWARM_AGENT_<NAME>=/abs/path`.
   live with `tmux show -gv`) as key names, and points the caller to `tmux_action`.
 - `tmux_action(target, action, arg)` runs one command from a fixed table against the
   agent's own pane, window or session. It resolves `target` to the exact pane and needs
-  a registered agent there, like the typing tools. It then uses the pane, window and
-  session ids, so renaming a session or window can't redirect the command:
+  a registered agent there, like the typing tools. It then uses ids (`%pane`, and
+  `$session:@window` for window commands), so renaming a session or window can't
+  redirect the command. The session comes from the caller's target, so for a window
+  linked into several sessions, `other:shared` acts in `other`. A bare `%pane` target
+  leaves the session choice to tmux:
 
   | action | arg | tmux command |
   | --- | --- | --- |

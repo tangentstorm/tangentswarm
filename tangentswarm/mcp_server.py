@@ -202,7 +202,9 @@ async def send_keys(target: str, text: str, enter: bool = True, literal: bool = 
 async def tmux_action(target: str, action: str, arg: str | int | None = None) -> dict:
     """Run a named tmux command on a coding agent's own pane or window. Use this instead of
     tmux's prefix key, which send_keys refuses. The target resolves to the exact pane, which
-    must run a registered agent, and the command uses that pane's own window and session.
+    must run a registered agent, and the command uses that pane's own window, in the session
+    the target names (pass session:window.pane for a window linked into several sessions;
+    for a bare %pane id tmux picks the session).
     Actions:
     - show_window: make the agent's window the current one in its session
     - select_pane: make the agent's pane the active one in its window

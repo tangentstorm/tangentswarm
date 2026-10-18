@@ -11,11 +11,12 @@ from tangentswarm import agents, mcp_server, tmux, tmux_actions
 
 def fake_agent(monkeypatch, agent='claude', where=None, windows='0 1 2 5'):
     """A pane %10 running `agent` in window @3 (index 2) of session $1; records commands."""
-    w = {'session_id': '$1', 'window_id': '@3', 'window_index': '2', 'zoomed': '0', 'active': '1'}
+    w = {'pane_id': '%10', 'session_id': '$1', 'window_id': '@3', 'window_index': '2',
+         'zoomed': '0', 'active': '1'}
     w.update(where or {})
     monkeypatch.setattr(agents, 'pane_agent', lambda t: {'pane_id': '%10', 'agent': agent})
     monkeypatch.setattr(tmux, 'display', lambda t, f: '\t'.join(
-        [w['session_id'], w['window_id'], w['window_index'], w['zoomed'], w['active']]))
+        [w['pane_id'], w['session_id'], w['window_id'], w['window_index'], w['zoomed'], w['active']]))
     ran = []
 
     def run_checked(argv):
@@ -28,13 +29,13 @@ def fake_agent(monkeypatch, agent='claude', where=None, windows='0 1 2 5'):
 
 
 @pytest.mark.parametrize('action, arg, expected', [
-    ('show_window', None, [['select-window', '-t', '@3']]),
+    ('show_window', None, [['select-window', '-t', '$1:@3']]),
     ('select_pane', None, [['select-pane', '-t', '%10']]),
     ('zoom', None, [['resize-pane', '-Z', '-t', '%10']]),
     ('unzoom', None, []),                                           # not zoomed: nothing to do
-    ('rename_window', 'claude-review', [['rename-window', '-t', '@3', 'claude-review']]),
-    ('move_window', 7, [['move-window', '-s', '@3', '-t', '$1:7']]),          # free index
-    ('move_window', '1', [['move-window', '-b', '-s', '@3', '-t', '$1:1']]),  # taken: insert
+    ('rename_window', 'claude-review', [['rename-window', '-t', '$1:@3', 'claude-review']]),
+    ('move_window', 7, [['move-window', '-s', '$1:@3', '-t', '$1:7']]),       # free index
+    ('move_window', '1', [['move-window', '-b', '-s', '$1:@3', '-t', '$1:1']]),  # taken: insert
     ('move_window', 2, []),                                         # already there
     ('set_pane_title', 'reviewing #13', [['select-pane', '-t', '%10', '-T', 'reviewing #13']]),
 ])
@@ -81,6 +82,13 @@ def test_bad_actions_and_args_run_nothing(monkeypatch, action, arg, match):
     assert ran == []
 
 
+def test_target_that_moved_to_another_pane_runs_nothing(monkeypatch):
+    ran = fake_agent(monkeypatch, where={'pane_id': '%11'})      # target re-resolves elsewhere
+    with pytest.raises(tmux_actions.ActionError, match='now resolves to %11, not %10'):
+        tmux_actions.run_action('agents:5', 'show_window')
+    assert ran == []
+
+
 def test_refuses_a_pane_without_an_agent(monkeypatch):
     ran = fake_agent(monkeypatch, agent=None)
     with pytest.raises(agents.NotAnAgentPane, match='refusing to act on it'):
@@ -99,7 +107,7 @@ def test_tool_reports_errors(monkeypatch):
     with pytest.raises(Exception, match='unknown action'):
         anyio.run(lambda: mcp_server.tmux_action('x', 'detach_client'))
     out = anyio.run(lambda: mcp_server.tmux_action('x', 'move_window', 1))
-    assert out['commands'] == ['move-window -b -s @3 -t $1:1']
+    assert out['commands'] == ['move-window -b -s $1:@3 -t $1:1']
 
 
 # ---------------------------------------------------------------------------
@@ -151,3 +159,25 @@ def test_against_real_tmux(private_tmux):
     assert t('display', '-p', '-t', 'agents:w2', '#{window_zoomed_flag}') == '0'
     tmux_actions.run_action('agents:w2.1', 'select_pane')
     assert t('display', '-p', '-t', 'agents:w2', '#{pane_index}') == '1'
+
+
+def test_linked_window_acts_in_the_named_session(private_tmux):
+    """A window linked into two sessions has one pane id; the caller's session must win,
+    not the one tmux would pick for the bare id."""
+    t = private_tmux
+    t('new-session', '-d', '-s', 'other', '-n', 'o0', 'sleep 300')
+    t('link-window', '-d', '-s', 'agents:w2', '-t', 'other:5')
+    pane = t('display', '-p', '-t', 'agents:w2', '#{pane_id}')
+    assert t('display', '-p', '-t', pane, '#{session_name}') == 'other'   # tmux's own pick
+
+    def active(session):
+        return t('list-windows', '-t', session, '-F', '#{window_name}#{?window_active,*,}').split()
+
+    out = tmux_actions.run_action('agents:w2', 'show_window')
+    assert 'w2*' in active('agents') and 'o0*' in active('other')
+    assert out['window'].startswith(t('display', '-p', '-t', 'agents', '#{session_id}') + ':')
+    tmux_actions.run_action('agents:w2', 'move_window', 0)
+    assert t('list-windows', '-t', 'agents', '-F', '#{window_index}=#{window_name}').split()[:2] == \
+        ['0=w2', '1=w0']
+    assert t('list-windows', '-t', 'other', '-F', '#{window_index}=#{window_name}').split() == \
+        ['0=o0', '5=w2']                                                  # other session untouched
