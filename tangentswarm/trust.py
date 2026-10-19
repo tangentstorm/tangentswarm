@@ -10,8 +10,10 @@ root, so trusting ~/ver does not cover ~/ver/<repo>.<branch>. We trust the workt
 real path only, which does not widen trust to the plain checkout.
 
 Claude rewrites that file itself, under a proper-lockfile lock: a directory named
-<config>.lock, treated as stale after 10s. We take the same lock, re-read, set only our
-key, write a temp file in the same directory with the same mode, fsync and os.replace.
+<config>.lock, refreshed every 5s while held and treated as stale after 10s. We take the
+same lock and refresh it the same way, re-read, set only our key, write a temp file in the
+same directory with the same mode, fsync and os.replace. If the lock was taken over or
+replaced meanwhile (its inode or mtime changed) we write nothing and leave it alone.
 A missing or unparsable file is never written; the caller gets a warning instead.
 
 Codex (checked against 0.157) keeps trust in $CODEX_HOME/config.toml (default ~/.codex)
@@ -29,6 +31,7 @@ import json
 import os
 import stat
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 
@@ -40,6 +43,7 @@ except ImportError:          # Python 3.10: Codex is then not pre-trusted
 LOCK_STALE = 10.0       # proper-lockfile's default, which Claude Code uses
 LOCK_TIMEOUT = 15.0
 LOCK_POLL = 0.05
+LOCK_UPDATE = None      # heartbeat interval; None means stale / 2, as in proper-lockfile
 
 
 class TrustError(RuntimeError):
@@ -59,12 +63,76 @@ def codex_config_path():
 # ---------------------------------------------------------------------------
 # locking and atomic replacement
 
+class _HeldLock:
+    """A <config>.lock directory we created. A heartbeat thread touches its mtime every
+    `update` seconds so no one takes it over as stale while we hold it. It is ours only
+    while its inode and mtime are the ones we last saw: proper-lockfile tells a
+    compromised lock the same way, and an owner file inside would make the directory
+    nonempty, which Claude Code could then neither take over nor release."""
+
+    def __init__(self, lock, update):
+        self.lock = lock
+        self.update = update
+        self.lost = None
+        self._seen = self._stamp()
+        self._mu = threading.Lock()
+        self._stop = threading.Event()
+        self._beat = threading.Thread(target=self._run, name='config-lock-heartbeat', daemon=True)
+        self._beat.start()
+
+    def _stamp(self):
+        st = os.stat(self.lock)
+        return (st.st_ino, st.st_mtime_ns)
+
+    def _verify(self):
+        """Set self.lost and return False if the lock is no longer ours. Holds _mu."""
+        if self.lost is None:
+            try:
+                now = self._stamp()
+            except OSError as e:
+                now = e.strerror
+            if now != self._seen:
+                self.lost = f"{self.lock} was removed or replaced by another process while held"
+        return self.lost is None
+
+    def _run(self):
+        while not self._stop.wait(self.update):
+            with self._mu:
+                if not self._verify():
+                    return
+                try:
+                    os.utime(self.lock)
+                    self._seen = self._stamp()
+                except OSError as e:
+                    self.lost = f"could not refresh {self.lock}: {e.strerror}"
+                    return
+
+    def check(self):
+        """Raise TrustError unless the lock is still ours (call just before writing)."""
+        with self._mu:
+            if not self._verify():
+                raise TrustError(f"{self.lost}; left as it was")
+
+    def release(self):
+        """Stop the heartbeat and remove the lock, but only if it is still ours."""
+        self._stop.set()
+        self._beat.join()
+        with self._mu:
+            if self._verify():
+                try:
+                    os.rmdir(self.lock)
+                except OSError:
+                    pass
+
+
 @contextmanager
-def config_lock(path, timeout=None, stale=None, sleep=time.sleep, clock=time.time):
-    """Hold <path>.lock the way proper-lockfile does (mkdir, stale after `stale` seconds),
-    so Claude Code and other tangentswarm processes wait for us and we wait for them."""
+def config_lock(path, timeout=None, stale=None, sleep=time.sleep, clock=time.time, update=None):
+    """Hold <path>.lock the way proper-lockfile does (mkdir, refreshed while held, stale
+    after `stale` seconds), so Claude Code and other tangentswarm processes wait for us and
+    we wait for them. Yields a _HeldLock; call its check() right before writing."""
     timeout = LOCK_TIMEOUT if timeout is None else timeout
     stale = LOCK_STALE if stale is None else stale
+    update = update or LOCK_UPDATE or stale / 2
     lock = os.path.realpath(path) + '.lock'    # beside the target, as proper-lockfile does
     deadline = clock() + timeout
     while True:
@@ -86,22 +154,20 @@ def config_lock(path, timeout=None, stale=None, sleep=time.sleep, clock=time.tim
             if clock() >= deadline:
                 raise TrustError(f"timed out after {timeout:.0f}s waiting for {lock}{stuck}")
             sleep(LOCK_POLL)
+    held = _HeldLock(lock, update)
     try:
-        yield
+        yield held
     finally:
-        try:
-            os.rmdir(lock)
-        except OSError:
-            pass
+        held.release()
 
 
 def _fingerprint(st):
     return (st.st_ino, st.st_size, st.st_mtime_ns)
 
 
-def _replace(real, text, st):
+def _replace(real, text, st, held):
     """Write text next to `real` with its mode, fsync, and os.replace it, unless the file
-    changed since it was read (st)."""
+    changed since it was read (st) or the lock `held` is no longer ours."""
     d = os.path.dirname(real)
     fd, tmp = tempfile.mkstemp(dir=d, prefix='.' + os.path.basename(real) + '.', suffix='.tmp')
     try:
@@ -110,6 +176,7 @@ def _replace(real, text, st):
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
+        held.check()
         if _fingerprint(os.stat(real)) != _fingerprint(st):
             raise TrustError(f"{real} changed while it was being updated; left as it was")
         os.replace(tmp, real)
@@ -148,7 +215,7 @@ def trust_claude(workdir, config=None):
     path = config or claude_config_path()
     key = os.path.realpath(workdir)
     try:
-        with config_lock(path):
+        with config_lock(path) as held:
             try:
                 real, st, text = _read(path)
             except FileNotFoundError:
@@ -172,7 +239,7 @@ def trust_claude(workdir, config=None):
             out = json.dumps(data, indent=2, ensure_ascii=False)
             if text.endswith('\n'):
                 out += '\n'
-            _replace(real, out, st)
+            _replace(real, out, st, held)
     except (TrustError, OSError) as e:
         return _result('claude', path, key, 'skipped', warning=f"could not update {path}: {e}")
     return _result('claude', path, key, 'trusted')
@@ -195,7 +262,7 @@ def trust_codex(workdir, config=None):
     if tomllib is None:
         return _result('codex', path, key, 'skipped', warning='needs Python 3.11+ (tomllib)')
     try:
-        with config_lock(path):
+        with config_lock(path) as held:
             try:
                 real, st, text = _read(path)
             except FileNotFoundError:
@@ -234,13 +301,14 @@ def trust_codex(workdir, config=None):
                 return _result('codex', path, key, 'skipped', warning=(
                     f"appending to {path} would change other settings; left untouched"))
             if real is None:
+                held.check()
                 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, 'w', encoding='utf-8') as f:
                     f.write(out)
                     f.flush()
                     os.fsync(f.fileno())
             else:
-                _replace(real, out, st)
+                _replace(real, out, st, held)
     except (TrustError, OSError) as e:
         return _result('codex', path, key, 'skipped', warning=f"could not update {path}: {e}")
     return _result('codex', path, key, 'trusted')

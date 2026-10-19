@@ -386,7 +386,7 @@ root (the key it writes when you accept the dialog there) or for any directory f
 cwd up to the worktree root. It never looks above the git root, so trusting `~/ver` does
 not cover `~/ver/<repo>.<branch>`. swarm trusts only the worktree, not the plain
 checkout. Claude rewrites its config itself, so the update takes the same lock Claude
-uses (a `<config>.lock` directory, stale after 10s), re-reads the file, sets only that
+uses (a `<config>.lock` directory, refreshed every 5s while held and stale after 10s; a lock taken over meanwhile means no write), re-reads the file, sets only that
 key, and replaces the file atomically (temp file in the same directory, same mode, fsync,
 `os.replace`). A file that is missing, unparsable or the wrong shape is never written.
 For Codex, an existing entry for the path (for example an explicit `"untrusted"`) is left

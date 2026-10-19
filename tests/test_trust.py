@@ -190,6 +190,55 @@ def test_claude_skips_when_a_stale_lock_cannot_be_removed(claude_json, wt, monke
     assert claude_json.read_bytes() == before and lock.exists()
 
 
+def _heartbeats():
+    return [t for t in threading.enumerate() if t.name == 'config-lock-heartbeat']
+
+
+def test_a_held_lock_is_refreshed_so_no_one_takes_it_over(tmp_path):
+    """Held past `stale` (a suspended process, a slow fsync): the heartbeat keeps it fresh."""
+    path, lock = str(tmp_path / 'c.json'), tmp_path / 'c.json.lock'
+    with trust.config_lock(path, stale=0.4, update=0.1) as held:
+        first = os.stat(lock).st_mtime_ns
+        time.sleep(1.0)
+        assert os.stat(lock).st_mtime_ns > first
+        with pytest.raises(trust.TrustError, match='timed out'):
+            with trust.config_lock(path, stale=0.4, timeout=0.3):
+                pass
+        held.check()
+    assert not lock.exists() and not _heartbeats()
+
+
+@pytest.mark.parametrize('how', ['replaced', 'removed'])
+def test_cleanup_only_removes_our_own_lock(tmp_path, how):
+    path, lock = str(tmp_path / 'c.json'), tmp_path / 'c.json.lock'
+    with trust.config_lock(path, update=60) as held:
+        lock.rmdir()                                  # another process took it over as stale
+        if how == 'replaced':
+            lock.mkdir()
+            os.utime(lock, (1_000_000_000, 1_000_000_000))
+        with pytest.raises(trust.TrustError, match='removed or replaced'):
+            held.check()
+    assert lock.is_dir() == (how == 'replaced') and not _heartbeats()
+
+
+def test_claude_writes_nothing_if_its_lock_is_taken_over(claude_json, wt, monkeypatch):
+    lock = Path(str(claude_json) + '.lock')
+    real_read = trust._read
+
+    def read_then_lose_the_lock(path):
+        out = real_read(path)
+        lock.rmdir()
+        lock.mkdir()                                  # someone else's lock now
+        os.utime(lock, (1_000_000_000, 1_000_000_000))
+        return out
+    monkeypatch.setattr(trust, '_read', read_then_lose_the_lock)
+    before = claude_json.read_bytes()
+    out = trust.trust_claude(str(wt))
+    assert out['status'] == 'skipped' and 'replaced by another process' in out['warning']
+    assert claude_json.read_bytes() == before and lock.is_dir()      # theirs, left alone
+    assert not [n for n in os.listdir(claude_json.parent) if n.endswith('.tmp')]
+
+
 def test_claude_lock_is_released_after_a_held_lock_clears(claude_json, wt):
     lock = Path(str(claude_json) + '.lock')
     lock.mkdir()
