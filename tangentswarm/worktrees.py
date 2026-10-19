@@ -21,7 +21,9 @@ Every spawn:
      default branch. Retrying is safe: an existing worktree for the same branch is
      reused, and a live agent of the same kind already in it is returned instead of
      a second one being started;
-  3. applies the repo's .swarm.yaml (see load_config) and launches the agent there.
+  3. applies the repo's .swarm.yaml (see load_config), pre-trusts the worktree for the
+     agent (see trust.py) and launches it there, then watches the new pane for a few
+     seconds and reports any first-run screen it stops on (agents.watch_startup).
 
 Worktree operations on one repo are serialised with a lock file in its git dir.
 Nothing here runs a command from the repo or the caller: only git and tmux.
@@ -39,7 +41,7 @@ from contextlib import contextmanager
 
 import yaml
 
-from . import registry, tmux
+from . import registry, tmux, trust
 
 CONFIG_FILE = '.swarm.yaml'
 CONFIG_KEYS = ('symlink', 'copy')
@@ -509,9 +511,36 @@ def _live_agents(path):
     return found
 
 
+def _watch_startup(pane_id, agent, wait=None):
+    from . import agents
+    try:
+        return agents.watch_startup(pane_id, agent, **({} if wait is None else {'wait': wait}))
+    except (tmux.TmuxError, OSError) as e:
+        return {'state': 'unknown', 'blocked': None, 'error': str(e)}
+
+
+def _trust_miss(agent, path, result):
+    """Explain why an agent asked about trust although its entry was written."""
+    method = result.get('method')
+    if method == 'flag':
+        return (f"the agent was started with {result.get('flag')} but still asked; its CLI may "
+                f"not support the flag any more. Accept the dialog by hand")
+    if method != 'config':
+        return f"{agent} is not pre-trusted by tangentswarm; accept the dialog by hand"
+    if trust.is_trusted(agent, path) is False:
+        # e.g. a Claude Code exiting at that moment writes back the copy it read at startup
+        return (f"the trust entry was written but is no longer in {result['config']}; another "
+                f"process rewrote the file. Accept the dialog by hand, or end this agent and "
+                f"start it again")
+    return (f"the trust entry is in {result['config']}, but the agent still asked: it probably "
+            f"reads another config, because the tmux server's HOME (or CLAUDE_CONFIG_DIR / "
+            f"CODEX_HOME) differs from this process's")
+
+
 def spawn_agent(agent, repo, branch, session='agents', window_name=None, top=None, run=None):
     """Start a registered agent in its own worktree of repo on branch (see module doc).
-    The window name defaults to '<agent>-<branch slug>'."""
+    The window name defaults to '<agent>-<branch slug>'. The result's 'startup' says
+    whether the agent reached its prompt or stopped on a named blocking screen."""
     argv = registry.launch_argv(agent)
     registry.validate_session(session)
     name = registry.validate_window_name(window_name) if window_name \
@@ -526,12 +555,18 @@ def spawn_agent(agent, repo, branch, session='agents', window_name=None, top=Non
         if same:
             return {'agent': agent, 'argv': argv, 'cwd': wt['path'], 'session': same[0]['target'].split(':')[0],
                     'window_name': same[0]['window_name'], 'pane': same[0], 'reused': True,
-                    'worktree': wt}
+                    'worktree': wt, 'trust': trust.trust_state(agent, wt['path']),
+                    'startup': _watch_startup(same[0]['pane_id'], agent, wait=0)}
         if live:
             raise WorktreeError(f"{live[0]['agent']} is already working in {wt['path']} "
                                 f"({live[0]['pane_id']}); one agent per worktree")
         out = registry.launch_agent(agent, wt['path'], session=session, window_name=name, run=run)
-    return {**out, 'reused': False, 'worktree': wt}
+    pane_id = out['pane'].get('pane_id')
+    startup = _watch_startup(pane_id, agent) if pane_id else {'state': 'unknown', 'blocked': None}
+    if (startup.get('blocked') or {}).get('kind') == 'trust_prompt' \
+            and out['trust'].get('status') in ('trusted', 'already_trusted'):
+        out['trust'] = {**out['trust'], 'warning': _trust_miss(agent, wt['path'], out['trust'])}
+    return {**out, 'reused': False, 'worktree': wt, 'startup': startup}
 
 
 def remove_worktree(repo, branch, delete_branch=False, top=None):
