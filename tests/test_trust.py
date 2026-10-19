@@ -144,6 +144,52 @@ def test_claude_takes_over_a_stale_lock(claude_json, wt):
     assert not lock.exists()
 
 
+def _stuck_lock(lock, kind):
+    if kind == 'file':
+        lock.write_text('')
+    else:
+        lock.mkdir()
+        (lock / 'leftover').write_text('')
+    old = time.time() - trust.LOCK_STALE - 5
+    os.utime(lock, (old, old))
+
+
+@pytest.mark.parametrize('kind', ['file', 'nonempty_dir'])
+def test_stale_lock_that_cannot_be_removed_times_out(tmp_path, kind):
+    """It used to `continue` straight past the deadline and spin forever."""
+    lock = tmp_path / 'c.json.lock'
+    _stuck_lock(lock, kind)
+    now, sleeps, calls = [time.time()], [], [0]
+
+    def clock():
+        calls[0] += 1
+        assert calls[0] < 1000, 'spinning without sleeping'
+        return now[0]
+
+    def sleep(s):
+        sleeps.append(s)
+        now[0] += s
+    with pytest.raises(trust.TrustError, match='could not be removed'):
+        with trust.config_lock(str(tmp_path / 'c.json'), timeout=1.0, clock=clock, sleep=sleep):
+            pass
+    assert 15 <= len(sleeps) <= 25 and lock.exists()     # waited ~1s in LOCK_POLL steps, left it
+
+
+@pytest.mark.parametrize('kind', ['file', 'nonempty_dir'])
+def test_claude_skips_when_a_stale_lock_cannot_be_removed(claude_json, wt, monkeypatch, kind):
+    lock = Path(str(claude_json) + '.lock')
+    _stuck_lock(lock, kind)
+    monkeypatch.setattr(trust, 'LOCK_TIMEOUT', 0.3)
+    before = claude_json.read_bytes()
+    out = []
+    t = threading.Thread(target=lambda: out.append(trust.trust_claude(str(wt))), daemon=True)
+    t.start()
+    t.join(5)
+    assert out, 'trust_claude did not return'
+    assert out[0]['status'] == 'skipped' and 'timed out' in out[0]['warning']
+    assert claude_json.read_bytes() == before and lock.exists()
+
+
 def test_claude_lock_is_released_after_a_held_lock_clears(claude_json, wt):
     lock = Path(str(claude_json) + '.lock')
     lock.mkdir()

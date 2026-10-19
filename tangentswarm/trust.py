@@ -76,14 +76,15 @@ def config_lock(path, timeout=None, stale=None, sleep=time.sleep, clock=time.tim
                 age = clock() - os.stat(lock).st_mtime
             except FileNotFoundError:
                 continue
+            stuck = ''
             if age > stale:
                 try:
                     os.rmdir(lock)      # a holder that died; proper-lockfile does the same
-                except OSError:
-                    pass
-                continue
+                    continue
+                except OSError as e:    # a file or nonempty dir: wait and time out instead
+                    stuck = f" (stale but could not be removed: {e.strerror})"
             if clock() >= deadline:
-                raise TrustError(f"timed out after {timeout:.0f}s waiting for {lock}")
+                raise TrustError(f"timed out after {timeout:.0f}s waiting for {lock}{stuck}")
             sleep(LOCK_POLL)
     try:
         yield
