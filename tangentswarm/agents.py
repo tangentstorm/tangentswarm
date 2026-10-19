@@ -196,24 +196,24 @@ def blocking_screen(screen, agent=None):
             continue
         if not all(p.lower() in hay for p in phrases):
             continue
-        if only is None and not _menu_below(lines, phrases[0]):
-            continue        # generic phrase quoted in a transcript, not a live dialog
+        if (only is None or not a) and not _live_dialog(lines, phrases):
+            continue        # quoted in a transcript (no input-box check applies), not a live dialog
         return {'kind': kind, 'agent': agent, 'lines': lines[-12:], 'hint': BLOCKING_HINTS[kind]}
     return None
 
 
-GENERIC_DIALOG_DEPTH = 12    # a generic question must be this close to the bottom
-_OPTION_RE = re.compile(r'^\s*[›>❯●]?\s*\d+\.\s')
+GENERIC_DIALOG_DEPTH = 12    # a live dialog's text and choices sit this close to the bottom
+_CHOICE_RE = re.compile(r'^\s*(?:[›>❯●]?\s*\d+\.\s|[›>❯●]\s*\S)')   # "2. No" or "❯ No, exit"
 
 
-def _menu_below(lines, question):
-    """True if the last line asking `question` sits near the bottom with numbered options
-    after it. Agents with no specific screens (Gemini, unknown ones) only match the generic
-    phrases this way, so the question merely appearing in their transcript does not."""
-    q = question.lower()
-    at = max((i for i, l in enumerate(lines) if q in l.lower()), default=-1)
-    return at >= len(lines) - GENERIC_DIALOG_DEPTH \
-        and any(_OPTION_RE.match(l) for l in lines[at + 1:])
+def _live_dialog(lines, phrases):
+    """True if every phrase is in the bottom GENERIC_DIALOG_DEPTH lines and a choice line
+    (numbered, or behind a selection cursor) is there too. Generic phrases, and every
+    phrase when the agent is unknown (no input-box check applies), only match this way,
+    so text merely quoted in a transcript does not."""
+    bottom = lines[-GENERIC_DIALOG_DEPTH:]
+    hay = '\n'.join(bottom).lower()
+    return all(p.lower() in hay for p in phrases) and any(_CHOICE_RE.match(l) for l in bottom)
 
 
 # ---------------------------------------------------------------------------

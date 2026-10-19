@@ -135,24 +135,33 @@ def config_lock(path, timeout=None, stale=None, sleep=time.sleep, clock=time.tim
     update = update or LOCK_UPDATE or stale / 2
     lock = os.path.realpath(path) + '.lock'    # beside the target, as proper-lockfile does
     deadline = clock() + timeout
-    while True:
+    while True:                 # every path ends at the deadline check
         try:
             os.mkdir(lock)
             break
         except FileExistsError:
+            pass
+        stuck, retry_now = '', False
+        try:
+            st = os.stat(lock)
+        except FileNotFoundError:
+            st, retry_now = None, True          # released between mkdir and stat
+        if st is not None and clock() - st.st_mtime > stale:
             try:
-                age = clock() - os.stat(lock).st_mtime
+                # a holder that died; proper-lockfile does the same. Look again first: a
+                # waiter that took it over meanwhile has a new inode or mtime, and its lock
+                # must not be removed.
+                again = os.stat(lock)
+                if (again.st_ino, again.st_mtime_ns) == (st.st_ino, st.st_mtime_ns):
+                    os.rmdir(lock)
+                    retry_now = True
             except FileNotFoundError:
-                continue
-            stuck = ''
-            if age > stale:
-                try:
-                    os.rmdir(lock)      # a holder that died; proper-lockfile does the same
-                    continue
-                except OSError as e:    # a file or nonempty dir: wait and time out instead
-                    stuck = f" (stale but could not be removed: {e.strerror})"
-            if clock() >= deadline:
-                raise TrustError(f"timed out after {timeout:.0f}s waiting for {lock}{stuck}")
+                retry_now = True
+            except OSError as e:    # a file or nonempty dir: wait and time out instead
+                stuck = f" (stale but could not be removed: {e.strerror})"
+        if clock() >= deadline:
+            raise TrustError(f"timed out after {timeout:.0f}s waiting for {lock}{stuck}")
+        if not retry_now:
             sleep(LOCK_POLL)
     held = _HeldLock(lock, update)
     try:

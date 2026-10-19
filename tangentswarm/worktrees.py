@@ -521,9 +521,12 @@ def _watch_startup(pane_id, agent, wait=None):
 
 def _trust_miss(agent, path, result):
     """Explain why an agent asked about trust although its entry was written."""
-    if result.get('method') == 'flag':
-        return (f"the agent was started with {result['flag']} but still asked; its CLI may "
+    method = result.get('method')
+    if method == 'flag':
+        return (f"the agent was started with {result.get('flag')} but still asked; its CLI may "
                 f"not support the flag any more. Accept the dialog by hand")
+    if method != 'config':
+        return f"{agent} is not pre-trusted by tangentswarm; accept the dialog by hand"
     if trust.is_trusted(agent, path) is False:
         # e.g. a Claude Code exiting at that moment writes back the copy it read at startup
         return (f"the trust entry was written but is no longer in {result['config']}; another "

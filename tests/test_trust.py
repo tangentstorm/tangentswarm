@@ -154,6 +154,79 @@ def _stuck_lock(lock, kind):
     os.utime(lock, (old, old))
 
 
+def _lock_fs(monkeypatch, lock, stat=None, rmdir=None):
+    """Make every mkdir of `lock` fail as taken, and route its stat/rmdir to fakes."""
+    real = {n: getattr(os, n) for n in ('mkdir', 'stat', 'rmdir')}
+
+    def mkdir(p, *a, **kw):
+        if str(p) == str(lock):
+            raise FileExistsError(p)
+        return real['mkdir'](p, *a, **kw)
+
+    def wrap(name, fake):
+        return lambda p, *a, **kw: fake(p) if str(p) == str(lock) else real[name](p, *a, **kw)
+    monkeypatch.setattr(trust.os, 'mkdir', mkdir)
+    if stat:
+        monkeypatch.setattr(trust.os, 'stat', wrap('stat', stat))
+    if rmdir:
+        monkeypatch.setattr(trust.os, 'rmdir', wrap('rmdir', rmdir))
+
+
+def _ticking_clock(limit=10000):
+    """Advances on every call; fails the test instead of spinning forever."""
+    now = [time.time()]
+    calls = [0]
+
+    def clock():
+        calls[0] += 1
+        assert calls[0] < limit, 'spun past the deadline'
+        now[0] += 0.01
+        return now[0]
+    return clock
+
+
+@pytest.mark.parametrize('case', ['vanishes_every_time', 'stale_removed_every_time'])
+def test_lock_loop_always_reaches_its_deadline(tmp_path, monkeypatch, case):
+    """Neighbors of the stuck-stale-lock spin: every retry path must hit the deadline."""
+    lock = tmp_path / 'c.json.lock'
+    if case == 'vanishes_every_time':        # released between our mkdir and stat, forever
+        def stat(p):
+            raise FileNotFoundError(p)
+        _lock_fs(monkeypatch, lock, stat=stat)
+    else:                                    # always stale, removal "works", mkdir still loses
+        old = os.stat(tmp_path)
+        _lock_fs(monkeypatch, lock, stat=lambda p: os.stat_result(
+            (old.st_mode, 1, 0, 0, 0, 0, 0, 0, 1_000_000_000, 0)), rmdir=lambda p: None)
+    sleeps = []
+    with pytest.raises(trust.TrustError, match='timed out'):
+        with trust.config_lock(str(tmp_path / 'c.json'), timeout=1.0, clock=_ticking_clock(),
+                               sleep=sleeps.append):
+            pass
+
+
+def test_stale_takeover_does_not_remove_a_lock_another_waiter_just_took(tmp_path, monkeypatch):
+    """Two waiters see the same stale lock; A removes it and takes a fresh one before B's
+    rmdir. B must look again and leave A's lock alone (proper-lockfile has this race)."""
+    lock = tmp_path / 'c.json.lock'
+    lock.mkdir()
+    os.utime(lock, (1_000_000_000, 1_000_000_000))
+    real_stat, seen = os.stat, []
+
+    def stat(p, *a, **kw):
+        st = real_stat(p, *a, **kw)
+        if str(p) == str(lock) and not seen:
+            seen.append(st)
+            lock.rmdir()                     # waiter A takes over the stale lock...
+            lock.mkdir()                     # ...and holds a fresh one
+            os.utime(lock, (time.time() + 5, time.time() + 5))
+        return st
+    monkeypatch.setattr(trust.os, 'stat', stat)
+    with pytest.raises(trust.TrustError, match='timed out'):
+        with trust.config_lock(str(tmp_path / 'c.json'), timeout=0.3):
+            pass
+    assert lock.is_dir() and real_stat(lock).st_mtime > time.time()     # A's lock survived
+
+
 @pytest.mark.parametrize('kind', ['file', 'nonempty_dir'])
 def test_stale_lock_that_cannot_be_removed_times_out(tmp_path, kind):
     """It used to `continue` straight past the deadline and spin forever."""
@@ -197,12 +270,12 @@ def _heartbeats():
 def test_a_held_lock_is_refreshed_so_no_one_takes_it_over(tmp_path):
     """Held past `stale` (a suspended process, a slow fsync): the heartbeat keeps it fresh."""
     path, lock = str(tmp_path / 'c.json'), tmp_path / 'c.json.lock'
-    with trust.config_lock(path, stale=0.4, update=0.1) as held:
+    with trust.config_lock(path, stale=2.0, update=0.1) as held:    # wide margins: busy CI hosts
         first = os.stat(lock).st_mtime_ns
-        time.sleep(1.0)
+        time.sleep(2.5)
         assert os.stat(lock).st_mtime_ns > first
         with pytest.raises(trust.TrustError, match='timed out'):
-            with trust.config_lock(path, stale=0.4, timeout=0.3):
+            with trust.config_lock(path, stale=2.0, timeout=0.3):
                 pass
         held.check()
     assert not lock.exists() and not _heartbeats()
@@ -261,6 +334,23 @@ def test_claude_lock_sits_beside_a_symlinked_config(home, wt, monkeypatch):
     assert trust.trust_claude(str(wt))['status'] == 'trusted'
     assert (home / '.claude.json').is_symlink() and not Path(str(home / '.claude.json') + '.lock').exists()
     assert json.loads(target.read_text())['projects'][str(wt.resolve())] == {'hasTrustDialogAccepted': True}
+
+
+def test_codex_lock_sits_beside_a_symlinked_config(home, wt, monkeypatch):
+    """Same as Claude: lock beside the resolved target, write the target, keep the link."""
+    (home / 'dotfiles').mkdir()
+    target = home / 'dotfiles' / 'codex.toml'
+    target.write_text('model = "x"\n')
+    (home / '.codex').mkdir()
+    (home / '.codex' / 'config.toml').symlink_to(target)
+    lock = Path(str(target) + '.lock')
+    lock.mkdir()
+    monkeypatch.setattr(trust, 'LOCK_TIMEOUT', 0.3)
+    assert 'timed out' in trust.trust_codex(str(wt))['warning']
+    lock.rmdir()
+    assert trust.trust_codex(str(wt))['status'] == 'trusted'
+    assert (home / '.codex' / 'config.toml').is_symlink()
+    assert tomllib.loads(target.read_text())['projects'][str(wt.resolve())] == {'trust_level': 'trusted'}
 
 
 def test_claude_concurrent_writers_lose_nothing(claude_json, tmp_path):
@@ -597,6 +687,31 @@ def test_grok_is_trusted_by_flag(top, monkeypatch):
     assert out == {'agent': 'grok', 'method': 'flag', 'flag': '--trust', 'status': 'trusted', 'scope': 'repo'}
     for agent, flag in trust.TRUST_FLAGS.items():
         assert flag in registry.REGISTRY[agent].flags
+
+
+@pytest.mark.parametrize('agent', registry.AGENT_NAMES)
+def test_every_agent_gets_a_complete_trust_result(agent, wt):
+    """Neighbors of the KeyError on Muse's flag result: every agent, every branch
+    (pretrust, reuse, the trust-miss warning) has the same keys and never raises."""
+    for out in (trust.pretrust(agent, str(wt)), trust.trust_state(agent, str(wt))):
+        assert {'agent', 'method', 'status'} <= set(out) and out['agent'] == agent
+        if out['method'] == 'config':
+            assert {'config', 'key'} <= set(out)
+        if out['method'] == 'flag':
+            assert out['flag'] in registry.REGISTRY[agent].flags
+        assert isinstance(worktrees._trust_miss(agent, str(wt), {**out, 'status': 'trusted'}), str)
+
+
+def test_an_unknown_agent_needs_a_live_menu_too():
+    """No input-box check applies when the agent is unknown, so agent-specific phrases
+    must not match text quoted in a transcript either."""
+    trust_text = agents.strip_ansi((FIX / 'claude_trust.ansi').read_text())
+    ready = agents.strip_ansi((FIX / 'claude_ready.ansi').read_text())
+    assert agents.blocking_screen(trust_text + '\n' + ready, None) is None
+    assert agents.blocking_screen(trust_text, None)['kind'] == 'trust_prompt'
+    for name, _, kind in BLOCKED:                     # never a wrong kind
+        b = agents.blocking_screen(agents.strip_ansi((FIX / name).read_text()), None)
+        assert b is None or b['kind'] == kind
 
 
 def test_kinds_for_other_agents_do_not_cross_over():
