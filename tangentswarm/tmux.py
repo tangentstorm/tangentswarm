@@ -38,13 +38,30 @@ def _key(name):
     return 'c-' + k[1] if len(k) == 2 and k[0] == '^' else k
 
 
+def _ctrl_byte(name):
+    """The control character a C-x key name types (C-r -> 0x12, C-Space -> 0x00), or None."""
+    k = _key(name)
+    if k == 'c-space':
+        return '\x00'
+    if len(k) == 3 and k.startswith('c-') and k[2] in '@abcdefghijklmnopqrstuvwxyz[\\]^_':
+        return chr(ord(k[2].upper()) & 0x1f)
+    return None
+
+
 def refused_key(keys, target, literal=False):
     """Why send_keys should not send `keys` to `target`, or None. 'ctrl_b': a raw 0x02 byte,
-    or C-b as a key name. 'prefix': a prefix key of the target's session as a key name (only
-    checked when literal=False, since literal text can't press one)."""
+    or C-b as a key name. 'prefix': a prefix key of the target's session, as a key name
+    (literal=False) or as the raw control character it types (either mode: send-keys never
+    reaches tmux's key tables, so both arrive in the pane as the same stray byte)."""
     if '\x02' in keys or (not literal and _key(keys) == 'c-b'):
         return 'ctrl_b'
-    if not literal and _key(keys) in {_key(p) for p in prefix_keys(target)}:
+    has_ctrl = any(ord(c) < 0x20 or c == '\x7f' for c in keys)
+    if literal and not has_ctrl:
+        return None                     # plain text: no need to ask tmux
+    prefixes = prefix_keys(target)
+    if not literal and _key(keys) in {_key(p) for p in prefixes}:
+        return 'prefix'
+    if has_ctrl and any(b and b in keys for b in map(_ctrl_byte, prefixes)):
         return 'prefix'
     return None
 

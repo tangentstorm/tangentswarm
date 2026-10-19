@@ -225,6 +225,9 @@ def test_send_keys_refuses_the_tmux_prefix(monkeypatch):
                                                        allow_ctrl_b=allow))
     anyio.run(lambda: mcp_server.send_keys('agents:2', 'C-c', enter=False, literal=False))
     anyio.run(lambda: mcp_server.send_keys('agents:2', 'C-r', enter=False))        # literal text
+    for text in ('\x12', 'search \x12 history'):  # the byte C-r types, in literal text
+        with pytest.raises(Exception, match="tmux's prefix key"):
+            anyio.run(lambda: mcp_server.send_keys('agents:2', text, enter=False))
     assert sent == [('%10', 'C-c'), ('%10', 'C-r')]
 
 

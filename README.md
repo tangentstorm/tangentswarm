@@ -472,7 +472,8 @@ with `TANGENTSWARM_AGENT_<NAME>=/abs/path`.
 - Clients never press tmux's prefix. `send_keys` writes straight to the pane, so tmux's
   key bindings never fire and a prefix key would only reach the agent as a stray control
   character. `send_keys` refuses the prefix keys in effect for the target's session
-  (`prefix` and `prefix2`: the session's own setting, else the global one) as key names,
+  (`prefix` and `prefix2`: the session's own setting, else the global one), both as key
+  names and as the raw control character they type (0x12 for C-r, even in literal text),
   and points the caller to `tmux_action`.
 - `tmux_action(target, action, arg)` runs one command from a fixed table against the
   agent's own pane, window or session. It resolves `target` to the exact pane and needs
