@@ -306,9 +306,18 @@ Sending to an agent always follows scialect's tell-worker sequence.
 
 1. Reach an empty prompt with the space probe. It types a space, checks the prompt and
    deletes the space. This sees past placeholder text but refuses when someone is typing.
-2. Optionally send `/new`, press Enter and wait 10s.
-3. Type the text literally, wait 0.5s and press Enter in a separate `send-keys`. TUIs
-   drop an Enter that arrives with the text.
+2. Optionally send `/new`, submit it as in step 3 and wait 10s.
+3. Type the text literally (long text goes in 2048-character `send-keys` pieces, and a
+   CR becomes a newline so it can't submit part-way). Wait at least 0.5s, and until the
+   text shows in the input box and stops changing, then press Enter in a separate
+   `send-keys`: TUIs drop an Enter that arrives with the text.
+4. Check that the text left the input box. Under load the Enter can still be lost, so
+   while the text is still sitting there, press Enter again (checking after 0.5s, 1s, 2s
+   and 4s). Grey ghost text (Claude Code's suggested prompt, Muse's placeholder) does
+   not count as input. Enter is never pressed into anything but our own unsent text, so
+   a dialog that opens mid-send can't have an option picked. If the text never showed
+   up, is still there after the retries, or the box never comes back blank, the send
+   fails with the screen's last lines (`SubmitError`; MCP and the CLI report it).
 
 Handoffs are atomic. Swarm writes the worker state (`.sci/status-line` and the guides)
 only after it delivers the message.
@@ -454,7 +463,7 @@ the caller cannot add arguments.
 | `muse` | `~/.local/bin/muse` (launcher; execs `muse-bin-<version>`) | `--trust-workspace` | full (❯ box between ─ bars; grey placeholder ignored; `/new`) |
 | `codex` | `~/.npm-global/bin/codex`, ... | | basic (› prompt, ported from scialect) |
 | `gemini` | `~/.npm-global/bin/gemini`, `/usr/local/bin/gemini`, ... | | basic (> prompt, ported from scialect) |
-| `grok` | `~/.grok/bin/grok` | | none: start/type only; `tell_agent` needs `require_empty_prompt=false` |
+| `grok` | `~/.grok/bin/grok` | | basic (❯ line inside a rounded `│ … │` box) |
 
 `list_agents` still lists an agent that is not installed, with `installed: false`, and
 starting it fails with "not installed". The operator can point an agent at another binary

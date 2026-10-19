@@ -55,7 +55,7 @@ REGISTRY = {
         names=frozenset({'muse'}), prefixes=('muse-bin',), adapter='full'),
     'grok': AgentSpec(
         'grok', ('~/.grok/bin/grok',),
-        names=frozenset({'grok'}), prefixes=('grok-linux',), adapter='none'),
+        names=frozenset({'grok'}), prefixes=('grok-linux',), adapter='basic'),
     'gemini': AgentSpec(
         'gemini', ('~/.npm-global/bin/gemini', '~/workspace/.npm-global/bin/gemini', '~/.local/bin/gemini',
                    '/usr/local/bin/gemini', '/usr/bin/gemini'),

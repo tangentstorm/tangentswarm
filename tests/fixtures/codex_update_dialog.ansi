@@ -1,0 +1,9 @@
+
+  [1mUpdate available[0;2m · 0.157.0 → 0.161.0[0m
+  [2mRelease notes: [4m]8;;https://github.com/openai/codex/releases/latest\https://github.com/openai/codex/releases/latest[0m]8;;\
+
+  1. Update now (runs `npm install -g @openai/codex`)
+  2. Skip
+[1;7m› 3. Skip until next version
+[0m
+  [1menter[0;2m continue · [0;1mesc[0;2m skip

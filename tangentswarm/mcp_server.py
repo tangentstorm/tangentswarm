@@ -161,7 +161,8 @@ async def send_keys(target: str, text: str, enter: bool = True, literal: bool = 
     """Type into a coding agent's pane. Refused unless the pane's foreground process is a
     registered agent, so it never types into a shell. literal=true (the default) sends the
     text verbatim with send-keys -l, then, if enter is set, waits 0.5s and presses Enter in
-    a separate call. literal=false passes `text` as one tmux key name, such as 'C-c',
+    a separate call. send_keys does not check that the agent took the Enter, since it is
+    also how you answer dialogs; use tell_agent to deliver a message. literal=false passes `text` as one tmux key name, such as 'C-c',
     'Escape' or 'Up'.
 
     Keys go straight to the agent, never through tmux's prefix or key bindings, so the
@@ -315,8 +316,12 @@ async def tell_agent(target: str, text: str, new_conversation: bool = False,
                      require_empty_prompt: bool = True) -> dict:
     """Send a message to a coding agent the way scialect's tell-worker does. It makes sure the
     prompt is empty with the space probe and refuses if someone is typing. Then it optionally
-    sends '/new', presses Enter and waits 10s. Last, it types the text literally, waits 0.5s
-    and presses Enter."""
+    sends '/new', submits it and waits 10s. Last, it types the text literally, presses Enter
+    once the text shows in the input box, and checks that the text left the box, pressing
+    Enter again while it is still there (checking after 0.5s, 1s, 2s and 4s). It fails, with the
+    screen's last lines, if the text never showed up, is still unsent after the retries, or
+    the box never came back blank (a dialog may be open; Enter is never pressed into one).
+    Returns enter_presses and submit_verified."""
     try:
         return await anyio.to_thread.run_sync(lambda: agents.tell_agent(
             target, text, new_conversation=new_conversation, require_empty_prompt=require_empty_prompt))
