@@ -36,22 +36,33 @@ def _bar_lines(lines):
             if '─' in line and len(line.replace('─', '').strip()) < 15]
 
 
-def claude_prompt_blank(screen):
-    """Return True if Claude Code's input line is blank. The input line sits between
-    the two lowest ─ bars and starts with ❯. It is blank when nothing follows the ❯."""
-    lines = screen.split('\n')
+def _claude_input_region(lines):
+    """Return (first, end) line indices of Claude Code's input box: from the ❯ line down to
+    the lowest ─ bar, so multiline input's continuation lines count. Without two bars, only
+    the last ❯ line counts. None if there is no ❯ line."""
     bars = _bar_lines(lines)
     if len(bars) < 2:
-        for line in reversed(lines):
-            pos = line.find('❯')
-            if pos != -1:
-                return line[pos + 1:].strip() == ''
+        for i in range(len(lines) - 1, -1, -1):
+            if '❯' in lines[i]:
+                return i, i + 1
+        return None
+    for i in range(bars[-2] + 1, bars[-1]):
+        if '❯' in lines[i]:
+            return i, bars[-1]
+    return None
+
+
+def claude_prompt_blank(screen):
+    """Return True if Claude Code's input is blank. The input box sits between the two
+    lowest ─ bars and starts with ❯. It is blank when nothing follows the ❯, on the ❯ line
+    or on any continuation line below it."""
+    lines = screen.split('\n')
+    region = _claude_input_region(lines)
+    if region is None:
         return False
-    for line in lines[bars[-2] + 1:bars[-1]]:
-        pos = line.find('❯')
-        if pos != -1:
-            return line[pos + 1:].strip() == ''
-    return False
+    first, end = region
+    body = [lines[first][lines[first].find('❯') + 1:]] + lines[first + 1:end]
+    return all(line.strip() == '' for line in body)
 
 
 def codex_prompt_blank(screen):
@@ -132,8 +143,13 @@ def input_view(text):
     """Return the plain text of an escape-coded capture (capture-pane -e), with every
     character drawn dim or in grey blanked out, except prompt glyphs and box drawing.
     Claude Code (prompt suggestions), Muse (placeholder) and Codex draw hints that way,
-    and draw typed input in the normal colour."""
-    out = []
+    and draw typed input in the normal colour. Use this for prompt detection only: it
+    also blanks unrelated dim output elsewhere on the screen."""
+    return ''.join(_mask(chunk) if hint else chunk for chunk, hint in _segments(text))
+
+
+def _segments(text):
+    """Split an escape-coded capture into (plain chunk, drawn as a hint?) pairs."""
     dim = False
     fg = None
     pos = 0
@@ -141,7 +157,7 @@ def input_view(text):
         chunk = text[pos:m.start()]
         pos = m.end()
         if chunk:
-            out.append(_mask(chunk, dim, fg))
+            yield chunk, _is_hint(dim, fg)
         if m.group(2) != 'm':
             continue
         params = [p for p in re.split('[;:]', m.group(1) or '0')]
@@ -169,8 +185,7 @@ def input_view(text):
                 fg = ('16', p)
             i += 1
     if pos < len(text):
-        out.append(_mask(text[pos:], dim, fg))
-    return ''.join(out)
+        yield text[pos:], _is_hint(dim, fg)
 
 
 def _is_hint(dim, fg):
@@ -186,10 +201,102 @@ def _is_hint(dim, fg):
     return False
 
 
-def _mask(chunk, dim, fg):
-    if not _is_hint(dim, fg):
-        return chunk
+def _mask(chunk):
     return ''.join(c if (c in _KEEP or c == '\n') else ' ' for c in chunk)
+
+
+# ---------------------------------------------------------------------------
+# the prompt as typed versus the screen as drawn
+
+SUGGESTION_LABEL = '[ghost suggestion, not typed: {}]'
+SCREEN_NOTE = ('last_lines is the screen as drawn, for diagnostics; it is not evidence of typed '
+               'input. A grey/dim suggestion in the prompt box is shown as ' +
+               SUGGESTION_LABEL.format('...') + '. Read prompt.input / prompt_blank for '
+               'what is typed, and use pane_ready or tell_agent (which refuses to overwrite '
+               'real input) before typing.')
+
+
+def claude_prompt(raw):
+    """Read Claude Code's (or Muse's) input box from an escape-coded capture.
+
+    Returns {'input', 'suggestion', 'blank', 'lines'} or None if there is no ❯ box.
+
+    'input' is the text on the input lines with Claude's own padding removed and nothing
+    else: one separator character after the ❯, and on continuation lines the indent that
+    lines them up under it (pos(❯) + 2 columns). Typed indentation, inner and trailing
+    spaces, and the line structure (one line per box line, blank ones included) are kept.
+    tmux trims blanks at the end of a captured line, so trailing spaces typed at a line
+    end may already be gone; 'input' is what the screen shows, not a keystroke log.
+
+    'suggestion' is the positively identified ghost text, or None: on each input line,
+    the trailing run (blanks aside) of characters that input_view() would blank, i.e.
+    drawn dim or grey and not a prompt glyph or box-drawing character. Blanks in the
+    normal style just before the run stay in 'input'; dim/grey blanks belong to the run. If that run
+    touches a dim/grey glyph that input_view() keeps (say a dim 'a > b'), it cannot be
+    told apart from input, so nothing on that line is called a suggestion. Everything that
+    is not a suggestion, including unfamiliar styles and hint-styled text with typed text
+    after it, stays in 'input'. So 'blank' (input has only blanks) always agrees with
+    claude_prompt_blank(input_view(raw)), and errs toward not blank.
+
+    'lines' is the plain screen with each suggestion wrapped in SUGGESTION_LABEL; nothing
+    outside the input box is changed."""
+    plain, styled, masked = [], [], []
+    for chunk, hint in _segments(raw):
+        plain.append(chunk)
+        styled.extend([hint] * len(chunk))
+        masked.extend(hint and c not in _KEEP for c in chunk)   # what input_view() blanks
+    plain = ''.join(plain)
+    lines, rows, at = [], [], 0
+    for line in plain.split('\n'):
+        lines.append(line)
+        rows.append((styled[at:at + len(line)], masked[at:at + len(line)]))
+        at += len(line) + 1
+    region = _claude_input_region(lines)
+    if region is None:
+        return None
+    first, end = region
+    glyph = lines[first].find('❯')
+    typed, ghosts = [], []
+    for i in range(first, end):
+        line, (style, mask) = lines[i], rows[i]
+        if i == first:                       # one separator after the ❯
+            start = glyph + 1
+            if start < len(line) and line[start].isspace():
+                start += 1
+        else:                                # continuation indent under the ❯ text
+            start = 0
+            while start < min(len(line), glyph + 2) and line[start].isspace():
+                start += 1
+        stop = len(line.rstrip())
+        cut = stop
+        while cut > start and (mask[cut - 1] or line[cut - 1].isspace()):
+            cut -= 1
+        # stopped on a dim/grey glyph that input_view() keeps: can't tell, so no suggestion
+        ambiguous = cut > start and style[cut - 1]
+        while cut < stop and line[cut].isspace() and not style[cut]:   # plain blanks stay typed
+            cut += 1
+        ghost = line[cut:stop].lstrip()
+        if ghost and not ambiguous:
+            ghosts.append(ghost)
+            lead = stop - cut - len(ghost)
+            lines[i] = line[:cut + lead] + SUGGESTION_LABEL.format(ghost) + line[stop:]
+            typed.append(line[start:cut])
+        else:
+            typed.append(line[start:])
+    text = '\n'.join(typed)
+    return {'input': text, 'suggestion': ' '.join(ghosts) or None,
+            'blank': text.strip() == '', 'lines': lines}
+
+
+def screen_view(raw, agent):
+    """Return (plain screen lines, prompt interpretation or None) for an agent's capture.
+    Only agents with a ❯ input box (claude, muse) get an interpretation; the lines of
+    other agents are the plain screen, unchanged."""
+    if (agent or '').lower() in ('claude', 'muse'):
+        prompt = claude_prompt(raw)
+        if prompt is not None:
+            return prompt.pop('lines'), prompt
+    return strip_ansi(raw).split('\n'), None
 
 
 def screen_hash(screen):
@@ -459,6 +566,7 @@ def agent_status(target, cdir=None):
     agent = info['agent']
     raw = tmux.capture_pane(info['pane_id'], escapes=True)
     screen = strip_ansi(raw)
+    lines, prompt = screen_view(raw, agent)
     det = detector_for(agent)
     panes = tmux.list_panes(info['pane_id'])
     pane = next((p for p in panes if p.get('pane_id') == info['pane_id']), panes[0] if panes else {})
@@ -472,8 +580,16 @@ def agent_status(target, cdir=None):
         'current_command': pane.get('current_command'),
         'current_path': pane.get('current_path'),
         'screen_sha256': screen_hash(screen),
-        'last_lines': [l for l in screen.rstrip('\n').split('\n')][-5:],
+        'prompt': prompt,
+        'last_lines': _tail(lines),
+        'screen_note': SCREEN_NOTE,
     }
+
+
+def _tail(lines, n=5):
+    while lines and not lines[-1]:
+        lines = lines[:-1]
+    return lines[-n:]
 
 
 def pane_ready(target, probe=False, agent=None, cdir=None):
@@ -528,13 +644,14 @@ def wait_for_idle(target, timeout=120.0, poll=1.0, settle=3.0, agent=None, cdir=
         info = pane_agent(target)
         agent = agent or info['agent']
         pane = info['pane_id']
-        capture = lambda: input_view(tmux.capture_pane(pane, escapes=True))  # noqa: E731
+        capture = lambda: tmux.capture_pane(pane, escapes=True)  # noqa: E731
     det = detector_for(agent)
     start = clock()
     last_hash, stable_since = None, start
     screen = ''
     while True:
-        screen = capture()
+        raw = capture()
+        screen = input_view(raw)
         h = screen_hash(screen)
         now = clock()
         if h != last_hash:
@@ -546,5 +663,5 @@ def wait_for_idle(target, timeout=120.0, poll=1.0, settle=3.0, agent=None, cdir=
         if now - start >= timeout:
             return {'target': target, 'agent': agent, 'idle': False,
                     'waited_sec': round(now - start, 2), 'prompt_blank': det(screen) if det else None,
-                    'last_lines': screen.rstrip('\n').split('\n')[-5:]}
+                    'last_lines': _tail(screen_view(raw, agent)[0]), 'screen_note': SCREEN_NOTE}
         sleep(poll)
