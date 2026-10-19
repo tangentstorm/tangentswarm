@@ -201,12 +201,18 @@ def capture_pane(target, history_lines=None, escapes=False):
 # Muse, etc.) can drop an Enter that arrives in the same burst as the text.
 ENTER_DELAY = 0.5
 
+# tmux refuses a command over about 16KB ("command too long"), so long text goes in
+# pieces. 2048 characters stay under that even when every one is 4 bytes of UTF-8.
+LITERAL_CHUNK = 2048
+
 
 def send_keys_literal(target, text, enter=True, enter_delay=ENTER_DELAY):
-    """Type text literally into a pane (send-keys -l), then press Enter
-    in a separate send-keys call so the text is never interpreted as keys.
-    Waits enter_delay seconds before the Enter."""
-    _run([TMUX, 'send-keys', '-t', target, '-l', '--', text], check=True)
+    """Type text literally into a pane (send-keys -l, in LITERAL_CHUNK pieces), then press
+    Enter in a separate send-keys call so the text is never interpreted as keys.
+    Waits enter_delay seconds before the Enter. This does not check that the agent took
+    the Enter; agents.TuiAgent.send_text does."""
+    for i in range(0, max(len(text), 1), LITERAL_CHUNK):
+        _run([TMUX, 'send-keys', '-t', target, '-l', '--', text[i:i + LITERAL_CHUNK]], check=True)
     if enter:
         if enter_delay:
             time.sleep(enter_delay)

@@ -132,6 +132,15 @@ class TellWorker:
         agent = (self.detect(w) or default).lower()
         return agent, self.tui_factory(agent, target)
 
+    def _submit(self, label, send):
+        """Run a send (tui.send_text or tui.new_conversation). A SubmitError becomes a
+        TellWorkerError before anything is committed, so the worker's state is unchanged."""
+        try:
+            send()
+        except agents.SubmitError as e:
+            self.fail(f"{label}: handoff not confirmed as submitted — no state changes made; "
+                      f"check the pane before retrying. {e}")
+
     def _reach_empty_prompt(self, label, tui):
         self.log(f"{label}: waiting for empty prompt (up to 5s)...")
         if not tui.ensure_prompt_is_empty():
@@ -148,7 +157,7 @@ class TellWorker:
         self._reach_empty_prompt(w.id, tui)
         notice = (f" IMPORTANT: .sci/{guide} has just been updated with new instructions; please read it carefully."
                   if guide and self.guide_would_change(w.path, guide) else '')
-        tui.send_text(message(notice))
+        self._submit(w.id, lambda: tui.send_text(message(notice)))
         commit()
         self.log(f"{w.id}: handoff sent to {agent}.")
 
@@ -182,8 +191,8 @@ class TellWorker:
                'Then, follow the instructions in .sci/proving-guide.md to acknowledge the assignment and begin work.'
                + notice)
         if agent == 'claude' or 'codex' in agent:
-            tui.new_conversation()      # send /new, wait 500ms, press Enter, wait 10s
-        tui.send_text(msg)              # type the text, wait 500ms, press Enter
+            self._submit(w.id, tui.new_conversation)   # submit /new, wait 10s
+        self._submit(w.id, lambda: tui.send_text(msg))   # type the text, submit it, check it left the box
         self.finalize_assigned(w)
         self.log(f"{w.id}: handoff sent to {agent}.")
 
@@ -279,7 +288,7 @@ class TellWorker:
         if not tui.ensure_prompt_is_empty():
             self.fail(f"{mgr.id}: never reached empty prompt — no changes made; safe to retry.")
         self.log(f"{mgr.id}: sending {what} for {target_worker_id}...")
-        tui.send_text(msg)
+        self._submit(mgr.id, lambda: tui.send_text(msg))
         self.propagate_guide(mgr.path, guide)
         self.write_status(mgr, f'REVIEWING: {target_worker_id}')
         self.log(f"{mgr.id}: {what} sent for {target_worker_id}.")
