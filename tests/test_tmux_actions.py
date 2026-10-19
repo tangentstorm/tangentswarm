@@ -198,3 +198,6 @@ def test_prefix_is_read_for_the_targets_session(private_tmux):
     assert tmux.refused_key('C-r', 'agents:w0') is None          # the global, overridden here
     assert tmux.refused_key('C-r', 'plain:p0') == 'prefix'
     assert tmux.refused_key('C-a', 'plain:p0') is None
+    assert tmux.refused_key('typed \x01', 'agents:w0', literal=True) == 'prefix'   # C-a's byte
+    assert tmux.refused_key('typed \x01', 'plain:p0', literal=True) is None
+    assert tmux.refused_key('\x12', 'plain:p0', literal=True) == 'prefix'

@@ -123,6 +123,28 @@ def test_refused_key(monkeypatch):
     assert set(asked) == {'t'}
 
 
+def test_refused_key_catches_the_prefix_as_a_raw_byte(monkeypatch):
+    """send-keys never reaches tmux's key tables, so the byte a prefix types is the same
+    stray character as the key name: refused in literal text and as a key, prefix2 too."""
+    monkeypatch.setattr(tmux, 'prefix_keys', lambda t: ['C-r', 'C-Space'])
+    for literal in (True, False):
+        for keys in ('\x12', 'abc\x12def', '\x00', 'x\x00'):
+            assert tmux.refused_key(keys, 't', literal=literal) == 'prefix'
+        for keys in ('\x03', 'tab\there', 'line\nbreak', '\x1b[A'):   # other control bytes are fine
+            assert tmux.refused_key(keys, 't', literal=literal) is None
+    monkeypatch.setattr(tmux, 'prefix_keys', lambda t: ['M-a', 'F12', 'None'])   # no control byte
+    assert tmux.refused_key('\x01', 't', literal=True) is None
+
+
+@pytest.mark.parametrize('name, byte', [
+    ('C-r', '\x12'), ('c-R', '\x12'), ('^R', '\x12'), ('C-a', '\x01'), ('C-@', '\x00'),
+    ('C-Space', '\x00'), ('C-\\', '\x1c'), ('C-]', '\x1d'), ('C-_', '\x1f'),
+    ('M-a', None), ('F1', None), ('C-1', None), ('C-M-a', None),
+])
+def test_ctrl_byte(name, byte):
+    assert tmux._ctrl_byte(name) == byte
+
+
 def test_refused_key_skips_tmux_for_literal_text(monkeypatch):
     monkeypatch.setattr(tmux, 'prefix_keys', lambda t: pytest.fail('literal text needs no lookup'))
     assert tmux.refused_key('hello', 't', literal=True) is None

@@ -171,7 +171,7 @@ async def send_keys(target: str, text: str, enter: bool = True, literal: bool = 
     why = tmux.refused_key(text, target, literal=literal)
     if why == 'prefix':
         raise ToolError(
-            f"refusing to send {text.strip()}: it is tmux's prefix key, and send_keys goes straight "
+            f"refusing to send {text.strip()!r}: it is (or contains) tmux's prefix key, and send_keys goes straight "
             "to the agent, so tmux would never see it. Use tmux_action for tmux commands "
             f"({', '.join(tmux_actions.ACTIONS)}).")
     if why == 'ctrl_b' and not allow_ctrl_b:
