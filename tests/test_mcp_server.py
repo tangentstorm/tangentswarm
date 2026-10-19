@@ -9,7 +9,7 @@ def tool_names():
 
 def test_expected_tools_registered():
     names = tool_names()
-    for expected in ['list_sessions', 'list_panes', 'capture_pane', 'send_keys', 'list_agents',
+    for expected in ['list_sessions', 'list_panes', 'capture_pane', 'send_keys', 'tmux_action', 'list_agents',
                      'start_agent', 'list_worktrees', 'remove_worktree', 'agent_status',
                      'pane_ready', 'wait_for_idle',
                      'tell_agent', 'swarm_status', 'tell_worker', 'cloud_list_sessions',
@@ -32,6 +32,7 @@ def test_every_tool_has_a_scope():
     assert names == set(mcp_server.TOOL_SCOPES)
     assert mcp_server.TOOL_SCOPES['tell_agent'] == 'tangentswarm:shell'
     assert mcp_server.TOOL_SCOPES['send_keys'] == 'tangentswarm:shell'
+    assert mcp_server.TOOL_SCOPES['tmux_action'] == 'tangentswarm:shell'
     assert mcp_server.TOOL_SCOPES['capture_pane'] == 'tangentswarm:read'
     assert mcp_server.TOOL_SCOPES['list_sessions'] == 'tangentswarm:read'
 

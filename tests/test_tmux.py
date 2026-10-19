@@ -1,5 +1,7 @@
 import subprocess
 
+import pytest
+
 from tangentswarm import tmux
 
 
@@ -84,3 +86,43 @@ def test_new_window_argv(monkeypatch):
     argv = rec.calls[0]
     assert argv[:2] == ['tmux', 'new-window'] and '-d' in argv
     assert argv[argv.index('-t') + 1] == 'agents:' and argv[-1] == 'bash'
+
+
+def test_prefix_keys_reads_the_targets_effective_options(monkeypatch):
+    rec = Recorder('C-a\tNone\n')
+    monkeypatch.setattr(tmux.subprocess, 'run', rec)
+    assert tmux.prefix_keys('agents:2') == ['C-a']
+    assert rec.calls == [['tmux', 'display-message', '-p', '-t', 'agents:2', '#{prefix}\t#{prefix2}']]
+    rec.stdout = 'C-r\tC-s\n'
+    assert tmux.prefix_keys('agents:2') == ['C-r', 'C-s']
+
+
+def test_prefix_keys_without_tmux(monkeypatch):
+    monkeypatch.setattr(tmux.subprocess, 'run', lambda argv, **kw: subprocess.CompletedProcess(
+        argv, 1, '', 'no server running'))
+    assert tmux.prefix_keys('agents:2') == []
+
+    def no_binary(argv, **kw):
+        raise FileNotFoundError('tmux')
+    monkeypatch.setattr(tmux.subprocess, 'run', no_binary)
+    assert tmux.prefix_keys('agents:2') == []
+
+
+def test_refused_key(monkeypatch):
+    asked = []
+    monkeypatch.setattr(tmux, 'prefix_keys', lambda t: asked.append(t) or ['C-r'])
+    for keys in ('C-b', 'c-b', ' ^B ', '^b'):
+        assert tmux.refused_key(keys, 't') == 'ctrl_b'
+        assert tmux.refused_key(keys, 't', literal=True) is None
+    assert tmux.refused_key('\x02', 't', literal=True) == 'ctrl_b' == tmux.refused_key('x\x02', 't')
+    for keys in ('C-r', 'c-R', '^R', ' ^r '):
+        assert tmux.refused_key(keys, 't') == 'prefix'
+        assert tmux.refused_key(keys, 't', literal=True) is None
+    for keys in ('C-c', 'Escape', 'Up', 'ctrl+b ctrl+b', 'C-b C-b', 'C-r n'):
+        assert tmux.refused_key(keys, 't') is None
+    assert set(asked) == {'t'}
+
+
+def test_refused_key_skips_tmux_for_literal_text(monkeypatch):
+    monkeypatch.setattr(tmux, 'prefix_keys', lambda t: pytest.fail('literal text needs no lookup'))
+    assert tmux.refused_key('hello', 't', literal=True) is None

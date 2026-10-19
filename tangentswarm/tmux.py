@@ -15,6 +15,39 @@ SEP = '\t'
 
 DEFAULT_SHELL = "${SHELL:-bash}"
 
+# send-keys writes straight to the pane and never goes through tmux's key tables, so a
+# prefix key sent with it never reaches tmux: the program in the pane gets a stray
+# control character. Clients use tangentswarm.tmux_actions for tmux commands instead,
+# and send_keys refuses the prefix keys (and C-b, Claude Code's "run in background").
+
+def prefix_keys(target):
+    """The prefix keys (the prefix and prefix2 options) in effect for `target`'s session:
+    its own setting if it overrides them, else the global one. [] if tmux can't say."""
+    try:
+        r = _run([TMUX, 'display-message', '-p', '-t', target, '#{prefix}\t#{prefix2}'])
+    except OSError:
+        return []
+    if r.returncode != 0:
+        return []
+    return [k for k in r.stdout.strip('\n').split('\t') if k.strip() and k.strip() != 'None']
+
+
+def _key(name):
+    """Normalise a key name for comparison: case-insensitive, ^R spelled C-r."""
+    k = name.strip().lower()
+    return 'c-' + k[1] if len(k) == 2 and k[0] == '^' else k
+
+
+def refused_key(keys, target, literal=False):
+    """Why send_keys should not send `keys` to `target`, or None. 'ctrl_b': a raw 0x02 byte,
+    or C-b as a key name. 'prefix': a prefix key of the target's session as a key name (only
+    checked when literal=False, since literal text can't press one)."""
+    if '\x02' in keys or (not literal and _key(keys) == 'c-b'):
+        return 'ctrl_b'
+    if not literal and _key(keys) in {_key(p) for p in prefix_keys(target)}:
+        return 'prefix'
+    return None
+
 
 class TmuxError(RuntimeError):
     """Raised when a structured tmux helper fails."""
