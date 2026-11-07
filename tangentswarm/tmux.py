@@ -4,8 +4,11 @@ Every call passes an argv list to subprocess, never a shell string. The MCP serv
 uses the structured helpers (list_sessions, list_panes, capture_pane,
 send_keys_literal, new_session, new_window). The swarm CLI uses the older helpers.
 """
+import os
+import re
 import subprocess
 import time
+import uuid
 
 TMUX = 'tmux'
 
@@ -59,8 +62,178 @@ class TmuxError(RuntimeError):
         super().__init__(f"{' '.join(self.argv)} failed ({returncode}): {self.stderr}")
 
 
+# Every pane this package creates runs its command in its own transient systemd scope in
+# swarm-workers.slice, so the slice's memory cap covers it. The pane COMMAND is wrapped,
+# never the tmux client: a client only asks the server, which forks the pane outside any
+# scope the client is in. Every tmux call goes through _run, which applies scope_spawn.
+SLICE = 'swarm-workers.slice'
+# subcommand -> (flags that take a value, flags naming the window for the unit, in order)
+SPAWN_COMMANDS = {
+    'new-session': ('cefFnstxy', 'ns'), 'new-window': ('ceFnt', 'n'),
+    'split-window': ('ceFlpt', 't'), 'respawn-pane': ('cet', 't'), 'respawn-window': ('cet', 't'),
+}
+SPAWN_ALIASES = {'new': 'new-session', 'neww': 'new-window', 'splitw': 'split-window',
+                 'respawnp': 'respawn-pane', 'respawnw': 'respawn-window'}
+GLOBAL_VALUE_FLAGS = {'-c', '-f', '-L', '-S', '-T'}
+DEFAULT_PANE_SHELL = 'exec "${SHELL:-/bin/sh}" -l'
+
+
+def unit_name(window):
+    slug = re.sub(r'[^A-Za-z0-9_-]+', '-', window or '').strip('-')[:40] or 'pane'
+    return f"swarm-{slug}-{uuid.uuid4().hex[:12]}"
+
+
+def scope_argv(window, argv):
+    """argv run in its own scope in SLICE. systemd-run --scope execs argv in place, so the
+    pane's process is still the agent itself and agent detection sees it unchanged."""
+    return ['/usr/bin/env', f'XDG_RUNTIME_DIR=/run/user/{os.getuid()}',
+            'systemd-run', '--user', f'--slice={SLICE}', '--scope', '--expand-environment=no',
+            f'--unit={unit_name(window)}', '--', *argv]
+
+
+def _split_flags(args, value_flags):
+    """Split a tmux subcommand's args into (flag args, {flag: value}, command args)."""
+    i, values = 0, {}
+    while i < len(args):
+        a = args[i]
+        if a == '--':
+            return args[:i + 1], values, args[i + 1:]
+        if not a.startswith('-') or a == '-':
+            break
+        for j, ch in enumerate(a[1:], 1):
+            if ch in value_flags:
+                if j + 1 < len(a):
+                    values[ch] = a[j + 1:]
+                else:
+                    i += 1
+                    values[ch] = args[i] if i < len(args) else ''
+                break
+        i += 1
+    return args[:i], values, args[i:]
+
+
+# The escapes tmux's args_escape (cmd_stringify_argv) writes into pane_start_command.
+START_ESCAPES = {'\\': '\\', '"': '"', "'": "'", '$': '$', '~': '~', '#': '#', ';': ';',
+                 '{': '{', '}': '}', '%': '%', ' ': ' ', 'n': '\n', 't': '\t', 'r': '\r'}
+
+
+def _unescape_start(s, i, end_quote):
+    """Decode one quoted or bare piece of a start command from s[i]; return (text, next i)."""
+    out = []
+    while i < len(s):
+        c = s[i]
+        if c == end_quote or (end_quote is None and c in ' "\''):
+            return ''.join(out), i
+        if c == '\\':
+            nxt = s[i + 1:i + 2]
+            if re.match(r'\\\$[A-Za-z_{]', s[i + 1:i + 4]):      # tmux writes $NAME as \\$NAME
+                out.append('$')
+                i += 3
+                continue
+            if re.fullmatch(r'[0-7]', nxt) and re.fullmatch(r'[0-7]{3}', s[i + 1:i + 4]):
+                out.append(chr(int(s[i + 1:i + 4], 8)))
+                i += 4
+                continue
+            if nxt not in START_ESCAPES:
+                raise ValueError(f"unknown escape \\{nxt} in start command")
+            out.append(START_ESCAPES[nxt])
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    if end_quote is not None:
+        raise ValueError('unterminated quote in start command')
+    return ''.join(out), i
+
+
+def parse_start_command(s):
+    """The exact argv of a #{pane_start_command} (tmux's own quoting). Raises ValueError on
+    anything it cannot decode exactly, so a respawn is refused rather than run altered."""
+    argv, i = [], 0
+    while i < len(s):
+        if s[i] == ' ':
+            i += 1
+            continue
+        word = []
+        while i < len(s) and s[i] != ' ':
+            if s[i] in '"\'':
+                text, i = _unescape_start(s, i + 1, s[i])
+                i += 1
+            else:
+                text, i = _unescape_start(s, i, None)
+            word.append(text)
+        argv.append(''.join(word))
+    return argv
+
+
+def _unscoped(argv):
+    """argv without the scope wrapper a pane we started already has."""
+    if argv[:3] == ['/usr/bin/env', argv[1] if len(argv) > 1 else '', 'systemd-run'] \
+            and argv[1].startswith('XDG_RUNTIME_DIR=') and f'--slice={SLICE}' in argv:
+        return argv[argv.index('--', argv.index(f'--slice={SLICE}')) + 1:]
+    return argv
+
+
+def _scoped_respawn(prefix, args, flags, values, window):
+    """A commandless respawn reruns the pane's start command, which may predate scoping.
+    Read it, decode tmux's quoting back to the exact argv, drop an older scope wrapper and
+    run it in a fresh scope. Refuses (TmuxError) rather than rerun it altered or unscoped."""
+    t = values.get('t')
+    r = subprocess.run([*prefix, 'display-message', '-p', *(['-t', t] if t else []),
+                        '#{pane_start_command}'], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    if r.returncode != 0:
+        raise TmuxError(r.args, r.returncode, r.stderr)
+    try:
+        command = _unscoped(parse_start_command(r.stdout.rstrip('\n')))
+    except ValueError as e:
+        raise TmuxError(r.args, 1, f"cannot scope the respawn ({e}); pass the pane command explicitly, e.g. respawn-pane -k -t <pane> -- <command>") from e
+    if not command:
+        command = ['/bin/sh', '-c', DEFAULT_PANE_SHELL]
+    elif len(command) == 1:
+        command = ['/bin/sh', '-c', command[0]]
+    return [args[0], *(f for f in flags if f != '--'), '--', *scope_argv(window, command)]
+
+
+def _scope_one(args, prefix=('tmux',)):
+    sub = SPAWN_ALIASES.get(args[0], args[0]) if args else None
+    if sub not in SPAWN_COMMANDS:
+        return args
+    value_flags, name_flags = SPAWN_COMMANDS[sub]
+    flags, values, command = _split_flags(args[1:], value_flags)
+    window = next((values[f] for f in name_flags if values.get(f)), sub)
+    if not command and sub.startswith('respawn'):
+        return _scoped_respawn(list(prefix), args, flags, values, window)
+    if not command:
+        command = ['/bin/sh', '-c', DEFAULT_PANE_SHELL]
+    elif len(command) == 1:
+        command = ['/bin/sh', '-c', command[0]]    # tmux runs a single argument with sh -c too
+    if flags[-1:] != ['--']:
+        flags = flags + ['--']
+    return [args[0], *flags, *scope_argv(window, command)]
+
+
+def scope_spawn(argv):
+    """Rewrite a tmux argv so every command in it that starts a pane runs scoped."""
+    if not argv or os.path.basename(argv[0]) != 'tmux':
+        return argv
+    i = 1
+    while i < len(argv) and argv[i].startswith('-') and argv[i] != '--':
+        i += 2 if argv[i] in GLOBAL_VALUE_FLAGS else 1
+    prefix = argv[:i]
+    out, cur = list(prefix), []
+    for a in argv[i:]:
+        if a in (';', '\\;'):
+            out += _scope_one(cur, prefix) + [a]
+            cur = []
+        else:
+            cur.append(a)
+    return out + _scope_one(cur, prefix)
+
+
 def _run(argv, check=False):
-    """Run tmux with an argv list, capturing text output."""
+    """Run tmux with an argv list, capturing text output. Panes it creates run scoped."""
+    argv = scope_spawn(argv)
     result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, check=False)
     if check and result.returncode != 0:
@@ -293,7 +466,7 @@ def run_tmux_command(session_name, command):
     # Add the target session if it's not already specified
     if '-t' not in cmd:
         cmd.extend(['-t', session_name])
-    return subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+    return _run(cmd)
 
 
 def next_window(session_name):
@@ -304,10 +477,7 @@ def next_window(session_name):
 def split_window(target, split_type, directory, shell=DEFAULT_SHELL):
     """Split a tmux window.
     split_type is '-h' for a horizontal split or '-v' for a vertical split."""
-    return subprocess.run([
-        TMUX, 'split-window', split_type, '-t', target,
-        '-c', directory, shell
-    ], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+    return _run([TMUX, 'split-window', split_type, '-t', target, '-c', directory, shell])
 
 
 def select_pane(target):
@@ -337,9 +507,7 @@ def attach_session(session_name, unicode=True):
 def new_window_args(*args):
     """Create a window from raw tmux new-window arguments, for the CLI.
     Returns the CompletedProcess."""
-    cmd = [TMUX, 'new-window']
-    cmd.extend(args)
-    return subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, check=False)
+    return _run([TMUX, 'new-window', *args])
 
 
 def kill_session(*args):
