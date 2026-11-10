@@ -460,10 +460,15 @@ the caller cannot add arguments.
 starting it fails with "not installed". The operator can point an agent at another binary
 with `TANGENTSWARM_AGENT_<NAME>=/abs/path`.
 
-- `start_agent` runs `[binary, *flags]` as the new window's own process. tmux gets the
-  argv as separate arguments and runs it without a shell. Agents without flags go through
-  `/usr/bin/env --`, so tmux never falls back to `sh -c`. When the agent exits, the window
-  closes and leaves no shell prompt. `repo` must resolve, after symlinks, to a git main
+- `start_agent` opens the window as a persistent `/bin/bash -l` in the worktree, waits
+  for an idle prompt there, then types one fixed launch line into it with `send-keys -l`
+  and a separate Enter: the shlex-quoted `[binary, *flags]` (flag-less agents through
+  `/usr/bin/env --`) wrapped in its own `systemd-run --user --scope` unit in
+  `swarm-workers.slice`. Nothing from the caller is in that line. When the agent exits,
+  the shell and directory survive, with the launch line in history. A later `start_agent`
+  for the same window reuses that shell only if it is idle at an empty prompt in the same
+  worktree; a busy or elsewhere shell is refused, never typed into. The typing tools below
+  still refuse the bare shell. `repo` must resolve, after symlinks, to a git main
   worktree directly inside `$TANGENTSWARM_AGENT_ROOT` (default `~/ver`). The agent runs
   in that repo's worktree for `branch`, never in the repo itself. `session` must match
   `[A-Za-z0-9_-]{1,40}`, and swarm creates it if it is missing. `window_name` is

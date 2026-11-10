@@ -2,13 +2,18 @@
 
 swarm-mcp never runs a caller-supplied command. `start_agent` launches one of the
 agents below in its own git worktree under the agent root (default ~/ver; see
-worktrees.py). tmux runs
-the absolute binary path and fixed flags directly, with no shell. The typing tools
-(send_keys, tell_agent, the pane_ready probe and tell_worker) only type into a pane
-whose foreground process is one of these agents, never into a bare shell.
+worktrees.py). The typing tools (send_keys, tell_agent, the pane_ready probe and
+tell_worker) only type into a pane whose foreground process is one of these agents,
+never into a bare shell.
 
-The agent is the pane's own process, so the window closes when the agent exits and
-leaves no shell prompt to type into.
+Every agent window is a persistent bash shell in its worktree (Michal's rule). start_agent
+creates the window running /bin/bash -l (tmux scopes it like every pane, see tmux.py), waits
+for an idle prompt in the right directory, then types ONE fixed launch line into it: the
+shlex-quoted scope_argv() of the agent's absolute binary and fixed flags, so the agent runs
+in its own swarm-workers.slice scope. It is typed with send-keys -l and a separate Enter;
+nothing from the caller is ever in it. When the agent exits, the shell and directory
+survive with the launch line in history (up-arrow to restart). A later start_agent for the
+same window reuses that shell only if it is idle at an empty prompt in the same worktree.
 
 The operator, not the MCP caller, can set these overrides:
   TANGENTSWARM_AGENT_ROOT    project root agents may start in (default ~/ver)
@@ -16,6 +21,8 @@ The operator, not the MCP caller, can set these overrides:
 """
 import os
 import re
+import shlex
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
@@ -161,9 +168,47 @@ def default_window_name(agent, cwd):
 # ---------------------------------------------------------------------------
 # starting an agent
 
-def launch_agent(agent, cwd, session='agents', window_name=None, run=None):
-    """Start a registered agent in a new window of `session` (created if missing), in cwd.
-    The argv is passed to tmux as separate arguments, so tmux execs it without a shell.
+SHELL_ARGV = ('/bin/bash', '-l')
+SHELL_NAMES = frozenset({'bash'})
+SHELL_WAIT = 15.0
+PROMPT_RE = re.compile(r'[$#]\s*$')
+SHELL_STATE_FORMAT = '#{pane_id}\t#{pane_current_command}\t#{window_panes}\t#{cursor_y}\t#{pane_current_path}'
+
+
+def launch_line(window, argv):
+    """The exact line typed into the agent's shell: argv in its own scope in the slice."""
+    return shlex.join(tmux.scope_argv(window, argv))
+
+
+def shell_problem(target, cwd, run):
+    """None if target is an idle bash at an empty prompt in cwd (alone in its window),
+    else the reason it is not."""
+    try:
+        out = run([tmux.TMUX, 'display-message', '-p', '-t', target, SHELL_STATE_FORMAT]).stdout
+        parts = out.rstrip('\n').split('\t', 4)
+        if len(parts) != 5:
+            return f"cannot read the state of {target}"
+        pane, cmd, npanes, y, path = parts
+        if npanes != '1':
+            return f"{npanes} panes in the window"
+        if cmd not in SHELL_NAMES:
+            return f"busy: foreground is {cmd or 'unknown'}, not an idle bash"
+        if os.path.realpath(path) != os.path.realpath(cwd):
+            return f"shell is in {path}, not {cwd}"
+        lines = run([tmux.TMUX, 'capture-pane', '-p', '-t', pane]).stdout.split('\n')
+    except tmux.TmuxError as e:
+        return f"{target}: {e.stderr or 'no such pane'}"
+    line = lines[int(y)] if y.isdigit() and int(y) < len(lines) else ''
+    if not PROMPT_RE.search(line):
+        return f"shell prompt is not empty ({line.strip()[-40:]!r})"
+    return None
+
+
+def launch_agent(agent, cwd, session='agents', window_name=None, run=None, shell_pane=None,
+                 sleep=time.sleep, wait=SHELL_WAIT):
+    """Start a registered agent in a new bash window of `session` (created if missing) in
+    cwd, or in shell_pane, an existing idle shell there, by typing its fixed launch line.
+    Raises AgentError, leaving any shell open, if the shell is busy, elsewhere or not ready.
     Internal: callers go through worktrees.spawn_agent, which gives every agent its own
     worktree and never starts one in the plain checkout."""
     argv = launch_argv(agent)
@@ -171,16 +216,34 @@ def launch_agent(agent, cwd, session='agents', window_name=None, run=None):
     validate_session(session)
     name = validate_window_name(window_name) if window_name else default_window_name(agent, real)
     run = run or tmux.run_checked
-    if tmux.has_session(session):
-        cmd = [tmux.TMUX, 'new-window', '-d', '-P', '-F', tmux.PANE_FORMAT,
-               '-t', f'{session}:', '-n', name, '-c', real]
+    if shell_pane is None:
+        if tmux.has_session(session):
+            cmd = [tmux.TMUX, 'new-window', '-d', '-P', '-F', tmux.PANE_FORMAT,
+                   '-t', f'{session}:', '-n', name, '-c', real]
+        else:
+            cmd = [tmux.TMUX, 'new-session', '-d', '-P', '-F', tmux.PANE_FORMAT,
+                   '-s', session, '-n', name, '-c', real]
+        pane = tmux.parse_format_output(run(cmd + ['--', *SHELL_ARGV]).stdout, tmux.PANE_FIELDS)
+        info = pane[0] if pane else {}
+        target = info.get('pane_id')
+        if not target:
+            raise AgentError(f"tmux did not report the new shell pane for {name}")
+        deadline = time.monotonic() + wait
+        why = shell_problem(target, real, run)
+        while why and time.monotonic() < deadline:
+            sleep(0.2)
+            why = shell_problem(target, real, run)
     else:
-        cmd = [tmux.TMUX, 'new-session', '-d', '-P', '-F', tmux.PANE_FORMAT,
-               '-s', session, '-n', name, '-c', real]
-    pane = tmux.parse_format_output(run(cmd + ['--', *argv]).stdout, tmux.PANE_FIELDS)
-    info = pane[0] if pane else {}
-    return {'agent': agent, 'argv': argv, 'cwd': real, 'session': session, 'window_name': name,
-            'pane': info}
+        target, info = shell_pane, {'pane_id': shell_pane}
+        why = shell_problem(target, real, run)
+    if why:
+        raise AgentError(f"not starting {agent} in {target} ({name}): {why}; the shell is left open")
+    line = launch_line(name, argv)
+    run([tmux.TMUX, 'send-keys', '-t', target, '-l', '--', line])
+    sleep(tmux.ENTER_DELAY)
+    run([tmux.TMUX, 'send-keys', '-t', target, 'Enter'])
+    return {'agent': agent, 'argv': argv, 'launch_line': line, 'cwd': real, 'session': session,
+            'window_name': name, 'pane': info, 'shell_reused': shell_pane is not None}
 
 
 # ---------------------------------------------------------------------------

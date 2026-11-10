@@ -1,5 +1,6 @@
 """Every pane swarm creates runs its command in a systemd scope in swarm-workers.slice."""
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -160,13 +161,33 @@ def test_non_spawn_commands_are_untouched():
         assert tmux.scope_spawn(argv) == argv
 
 
-def test_start_agent_through_the_real_runner_is_scoped(fake_bins, root, monkeypatch, rec):  # noqa: F811
+def test_start_agent_through_the_real_runner_is_scoped(fake_bins, root, monkeypatch):  # noqa: F811
+    """The bash window is scoped like every pane, and the agent typed into it gets its own scope."""
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        out = ''
+        if 'new-window' in argv:
+            out = 'agents\t5\tswarm-selftest\t0\t%99\t1\t0\tbash\t80\t24\t1\t0\t/x\n'
+        elif 'display-message' in argv:
+            out = f"%99\tbash\t1\t0\t{(root / 'proj').resolve()}\n"
+        elif 'capture-pane' in argv:
+            out = '$\n'
+        return subprocess.CompletedProcess(argv, 0, out, '')
+    monkeypatch.setattr(tmux.subprocess, 'run', run)
     monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
     registry.launch_agent('claude', 'proj', window_name='swarm-selftest')
-    head, unit, command = scope_of(rec.calls[0])
+    head, unit, command = scope_of(calls[0])
     assert head[:2] == ['tmux', 'new-window'] and head[head.index('-n') + 1] == 'swarm-selftest'
-    assert command == ['/usr/bin/env', '--', fake_bins['claude']]
-    assert unit.startswith('swarm-swarm-selftest-')
+    assert command == ['/bin/bash', '-l'] and unit.startswith('swarm-swarm-selftest-')
+    typed = [a for a in calls if a[:2] == ['tmux', 'send-keys']]
+    assert typed[0][:5] == ['tmux', 'send-keys', '-t', '%99', '-l'] and typed[1][-1] == 'Enter'
+    line = shlex.split(typed[0][-1])
+    head2, unit2, command2 = scope_of(['--', *line])
+    assert command2 == ['/usr/bin/env', '--', fake_bins['claude']]
+    assert unit2.startswith('swarm-swarm-selftest-') and unit2 != unit
 
 
 FAKE_SYSTEMD_RUN = '''#!/bin/sh
@@ -204,6 +225,9 @@ def test_tell_agent_still_detects_claude_in_a_scoped_pane(fake_bins, root, tmp_p
         assert log[1:5] == ['--user', '--slice=swarm-workers.slice', '--scope', '--expand-environment=no']
         assert log[5].startswith('--unit=swarm-claude-proj-')
         assert log[6:] == ['--', '/usr/bin/env', '--', str(claude)]
+        # the window is the bash shell the agent was typed into; it is still there
+        assert subprocess.run(['tmux', 'display-message', '-p', '-t', target, '#{pane_current_path}'],
+                              capture_output=True, text=True).stdout.strip() == str((root / 'proj').resolve())
     finally:
         subprocess.run(['tmux', 'kill-server'], capture_output=True)
 

@@ -1,5 +1,6 @@
 """The agent allowlist, cwd confinement and the 'type only into agents' guard."""
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -40,13 +41,39 @@ def fake_bins(tmp_path, monkeypatch):
 
 
 class Recorder:
-    def __init__(self):
+    """A tmux stand-in. New windows report pane %99; the shell in it is `fg` at `prompt`, in
+    the directory the window was opened in (or `cwd`)."""
+    def __init__(self, fg='bash', prompt='$', cwd=None, panes=1):
         self.calls = []
+        self.fg, self.prompt, self.cwd, self.panes = fg, prompt, cwd, panes
 
     def __call__(self, argv):
         self.calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout='agents\t5\tmuse-proj\t0\t%99\t1\t0\tmuse\t80\t24\t1\t0\t/x\n',
-                                           stderr='')
+        out = 'agents\t5\tmuse-proj\t0\t%99\t1\t0\tmuse\t80\t24\t1\t0\t/x\n'
+        if 'display-message' in argv:
+            cwd = self.cwd or next((a[a.index('-c') + 1] for a in self.calls if '-c' in a), '/nowhere')
+            out = f'%99\t{self.fg}\t{self.panes}\t1\t{cwd}\n'
+        elif 'capture-pane' in argv:
+            out = f'me@host:~/proj (b)\n{self.prompt}\n\n'
+        elif 'send-keys' in argv:
+            out = ''
+        return subprocess.CompletedProcess(argv, 0, stdout=out, stderr='')
+
+    def typed(self):
+        """The literal lines typed, each followed by its own Enter."""
+        keys = [a for a in self.calls if a[:2] == ['tmux', 'send-keys']]
+        assert all(k[-1] == 'Enter' for k in keys[1::2])
+        return [k[k.index('--') + 1] for k in keys[0::2]]
+
+
+def scoped(line):
+    """The command inside a typed launch line's systemd-run scope, and its unit."""
+    argv = shlex.split(line)
+    assert argv[:2] == ['/usr/bin/env', f'XDG_RUNTIME_DIR=/run/user/{os.getuid()}']
+    assert argv[2:7] == ['systemd-run', '--user', '--slice=swarm-workers.slice', '--scope',
+                         '--expand-environment=no']
+    assert argv[7].startswith('--unit=') and argv[8] == '--'
+    return argv[9:], argv[7][len('--unit='):]
 
 
 def call_tool(name, **kw):
@@ -122,24 +149,67 @@ def test_bad_names_rejected(fake_bins, root):
             registry.launch_agent('muse', 'proj', window_name=bad, run=Recorder())
 
 
-def test_start_agent_execs_argv_without_a_shell(fake_bins, root, monkeypatch):
+def test_start_agent_opens_a_bash_window_then_types_the_scoped_fixed_argv(fake_bins, root, monkeypatch):
     monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
     rec = Recorder()
     out = registry.launch_agent('muse', str(root / 'proj'), window_name='swarm-selftest', run=rec)
     argv = rec.calls[0]
     assert argv[:2] == ['tmux', 'new-window'] and '-d' in argv
     assert argv[argv.index('-c') + 1] == str((root / 'proj').resolve())
     assert argv[argv.index('-n') + 1] == 'swarm-selftest'
-    assert argv[argv.index('--') + 1:] == [fake_bins['muse'], '--trust-workspace']
-    assert out['pane']['pane_id'] == '%99'
-    # a flag-less agent is run through env so tmux never falls back to `sh -c`
+    assert argv[argv.index('--') + 1:] == ['/bin/bash', '-l']
+    line, = rec.typed()
+    command, unit = scoped(line)
+    assert command == [fake_bins['muse'], '--trust-workspace'] and unit.startswith('swarm-swarm-selftest-')
+    assert out['pane']['pane_id'] == '%99' and out['launch_line'] == line and out['shell_reused'] is False
+    # send-keys -l types it literally; Enter is a separate call, after the shell was checked
+    kinds = [a[1] for a in rec.calls]
+    assert kinds == ['new-window', 'display-message', 'capture-pane', 'send-keys', 'send-keys']
+    assert rec.calls[3][rec.calls[3].index('-t') + 1] == '%99' and '-l' in rec.calls[3]
+    assert rec.calls[4] == ['tmux', 'send-keys', '-t', '%99', 'Enter']
+    # a flag-less agent still goes through env; a missing session is created
     rec = Recorder()
     monkeypatch.setattr(tmux, 'has_session', lambda s: False)
     out = registry.launch_agent('claude', 'proj', session='scratch', run=rec)
     argv = rec.calls[0]
     assert argv[:2] == ['tmux', 'new-session'] and argv[argv.index('-s') + 1] == 'scratch'
-    assert argv[argv.index('--') + 1:] == ['/usr/bin/env', '--', fake_bins['claude']]
+    assert argv[argv.index('--') + 1:] == ['/bin/bash', '-l']
+    assert scoped(rec.typed()[0])[0] == ['/usr/bin/env', '--', fake_bins['claude']]
     assert out['window_name'] == 'claude-proj'
+
+
+def test_start_agent_is_fresh_and_never_continues(fake_bins, root, monkeypatch):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
+    rec = Recorder()
+    registry.launch_agent('claude', 'proj', run=rec)
+    assert '--continue' not in shlex.split(rec.typed()[0])
+
+
+def test_start_agent_reuses_an_idle_shell_without_a_new_window(fake_bins, root, monkeypatch):
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
+    rec = Recorder(cwd=str((root / 'proj').resolve()))
+    out = registry.launch_agent('claude', 'proj', run=rec, shell_pane='%7')
+    assert not any(a[1] in ('new-window', 'new-session') for a in rec.calls)
+    assert out['shell_reused'] is True and len(rec.typed()) == 1
+    assert rec.calls[-1] == ['tmux', 'send-keys', '-t', '%7', 'Enter']
+
+
+@pytest.mark.parametrize('state, why', [
+    (dict(fg='sleep'), 'busy'), (dict(cwd='/elsewhere'), 'shell is in /elsewhere'),
+    (dict(prompt='$ half typed'), 'prompt is not empty'), (dict(panes=2), '2 panes'),
+    (dict(fg='claude'), 'busy')])
+def test_start_agent_never_types_into_a_busy_or_misplaced_shell(fake_bins, root, monkeypatch, state, why):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    kw = dict(cwd=str((root / 'proj').resolve()))
+    kw.update(state)
+    rec = Recorder(**kw)
+    with pytest.raises(registry.AgentError, match=why):
+        registry.launch_agent('claude', 'proj', run=rec, shell_pane='%7')
+    with pytest.raises(registry.AgentError, match='left open'):
+        registry.launch_agent('claude', 'proj', run=rec, sleep=lambda s: None, wait=0.01)
+    assert not any('send-keys' in a or 'kill-window' in a or 'kill-pane' in a for a in rec.calls)
 
 
 # ---------------------------------------------------------------------------

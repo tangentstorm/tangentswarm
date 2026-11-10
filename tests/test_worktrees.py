@@ -1,6 +1,7 @@
 """One worktree per agent: layout, syncing the plain checkout, .swarm.yaml, retry and removal.
 Every test runs against throwaway repos: a bare origin, and a plain clone under a temp ~/ver."""
 import os
+import shlex
 import subprocess
 import threading
 from types import SimpleNamespace
@@ -340,13 +341,24 @@ def test_remove_deletes_only_merged_branches(w):
 # spawning agents (tmux is recorded, not run)
 
 class Recorder:
+    """tmux stand-in: a new window is an idle bash at its -c directory."""
     def __init__(self):
         self.calls = []
 
     def __call__(self, argv):
         self.calls.append(argv)
-        return subprocess.CompletedProcess(
-            argv, 0, stdout='agents\t5\tclaude-feat\t0\t%99\t1\t0\tclaude\t80\t24\t1\t0\t/x\n', stderr='')
+        out = 'agents\t5\tclaude-feat\t0\t%99\t1\t0\tclaude\t80\t24\t1\t0\t/x\n'
+        if 'display-message' in argv:
+            cwd = next(a[a.index('-c') + 1] for a in self.calls if '-c' in a)
+            out = f'%99\tbash\t1\t0\t{cwd}\n'
+        elif 'capture-pane' in argv:
+            out = '$\n'
+        elif 'send-keys' in argv:
+            out = ''
+        return subprocess.CompletedProcess(argv, 0, stdout=out, stderr='')
+
+    def typed(self):
+        return [shlex.split(a[a.index('--') + 1]) for a in self.calls if a[:2] == ['tmux', 'send-keys'] and '-l' in a]
 
 
 @pytest.fixture
@@ -367,8 +379,27 @@ def test_spawn_starts_the_agent_in_its_worktree(w, claude_bin):
     argv = rec.calls[0]
     assert argv[argv.index('-c') + 1] == os.path.join(w.top, 'proj.minavo-feat')
     assert argv[argv.index('-n') + 1] == 'claude-minavo-feat'
-    assert argv[argv.index('--') + 1:] == ['/usr/bin/env', '--', claude_bin]
+    assert argv[argv.index('--') + 1:] == ['/bin/bash', '-l']
+    line, = rec.typed()
+    assert line[-4:] == ['--', '/usr/bin/env', '--', claude_bin] and '--slice=swarm-workers.slice' in line
     assert out['reused'] is False and out['worktree']['branch'] == 'minavo/feat'
+
+
+def test_spawn_reuses_the_windows_surviving_shell(w, claude_bin, monkeypatch):
+    path = os.path.join(w.top, 'proj.feat')
+    shells = [{'session': 'agents', 'window_name': 'claude-feat', 'pane_id': '%42', 'current_command': 'bash',
+               'current_path': path},
+              {'session': 'agents', 'window_name': 'someone-elses-shell', 'pane_id': '%43',
+               'current_command': 'bash', 'current_path': path}]
+    monkeypatch.setattr(worktrees, '_all_panes', lambda: shells)
+    monkeypatch.setattr(worktrees, '_live_agents', lambda path: [])
+    seen = {}
+    monkeypatch.setattr(registry, 'launch_agent', lambda *a, **kw: seen.update(kw) or {'pane': {}})
+    worktrees.spawn_agent('claude', 'proj', 'feat', run=Recorder())
+    assert seen['shell_pane'] == '%42' and seen['window_name'] == 'claude-feat'
+    shells[0]['current_command'] = 'vim'          # busy: not offered; a new window is made instead
+    worktrees.spawn_agent('claude', 'proj', 'feat', run=Recorder())
+    assert seen['shell_pane'] is None
 
 
 def test_spawn_retry_returns_the_live_agent(w, claude_bin, monkeypatch):
@@ -410,8 +441,10 @@ def test_mcp_tools_round_trip(w, claude_bin, monkeypatch):
     call_tool('start_agent', agent='claude', repo='proj', branch='feat', command='bash -c id')
     argv = rec.calls[0]
     assert argv[argv.index('-c') + 1] == os.path.join(w.top, 'proj.feat')
-    assert argv[argv.index('--') + 1:] == ['/usr/bin/env', '--', claude_bin]
-    assert not any('bash' in a or a == 'id' for a in argv)
+    assert argv[argv.index('--') + 1:] == ['/bin/bash', '-l']
+    line, = rec.typed()
+    assert line[-4:] == ['--', '/usr/bin/env', '--', claude_bin]
+    assert not any('bash -c id' in a or a == 'id' for call in rec.calls for a in call)
     call_tool('list_worktrees', repo='proj')
     call_tool('remove_worktree', repo='proj', branch='feat')
     assert not os.path.exists(os.path.join(w.top, 'proj.feat'))
