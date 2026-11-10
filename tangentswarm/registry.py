@@ -13,7 +13,9 @@ shlex-quoted scope_argv() of the agent's absolute binary and fixed flags, so the
 in its own swarm-workers.slice scope. It is typed with send-keys -l and a separate Enter;
 nothing from the caller is ever in it. When the agent exits, the shell and directory
 survive with the launch line in history (up-arrow to restart). A later start_agent for the
-same window reuses that shell only if it is idle at an empty prompt in the same worktree.
+same window name reuses that window (found by session and name, wherever its shell is) only
+if its shell is idle at an exact, empty prompt in the same worktree; the line is typed, read
+back and only then submitted with Enter.
 
 The operator, not the MCP caller, can set these overrides:
   TANGENTSWARM_AGENT_ROOT    project root agents may start in (default ~/ver)
@@ -171,8 +173,16 @@ def default_window_name(agent, cwd):
 SHELL_ARGV = ('/bin/bash', '-l')
 SHELL_NAMES = frozenset({'bash'})
 SHELL_WAIT = 15.0
-PROMPT_RE = re.compile(r'[$#]\s*$')
-SHELL_STATE_FORMAT = '#{pane_id}\t#{pane_current_command}\t#{window_panes}\t#{cursor_y}\t#{pane_current_path}'
+ECHO_WAIT = 3.0
+# An empty input buffer is only accepted when the cursor's logical line is exactly a known
+# prompt with the cursor right after it. The known prompt is the one recorded in the pane
+# option PROMPT_OPTION when start_agent created the shell, or else one of PROMPT_TAILS.
+# Anything else (typed text, PS2 '> ', a search prompt, a changed prompt) is refused.
+PROMPT_TAILS = ('$ ', '# ')
+PROMPT_OPTION = '@swarm_prompt'
+SHELL_FIELDS = ('pane_id', 'pane_current_command', 'window_panes', 'history_size', 'pane_height',
+                'cursor_y', 'cursor_x', 'pane_current_path')
+SHELL_STATE_FORMAT = '\t'.join('#{%s}' % f for f in SHELL_FIELDS)
 
 
 def launch_line(window, argv):
@@ -180,34 +190,155 @@ def launch_line(window, argv):
     return shlex.join(tmux.scope_argv(window, argv))
 
 
+def shell_state(target, run):
+    """The pane's shell fields (see SHELL_FIELDS), with numbers as ints. Raises TmuxError."""
+    out = run([tmux.TMUX, 'display-message', '-p', '-t', target, SHELL_STATE_FORMAT]).stdout
+    parts = out.rstrip('\n').split('\t', len(SHELL_FIELDS) - 1)
+    if len(parts) != len(SHELL_FIELDS):
+        raise tmux.TmuxError(['display-message', target], 1, f"cannot read the state of {target}")
+    st = dict(zip(SHELL_FIELDS, parts))
+    for k in ('window_panes', 'history_size', 'pane_height', 'cursor_y', 'cursor_x'):
+        if not st[k].isdigit():
+            raise tmux.TmuxError(['display-message', target], 1, f"bad {k} {st[k]!r} for {target}")
+        st[k] = int(st[k])
+    return st
+
+
+def _logical_lines(run, pane, start, end):
+    """Screen rows start..end (negative = history) as logical lines: wrapped rows joined."""
+    out = run([tmux.TMUX, 'capture-pane', '-p', '-J', '-t', pane, '-S', str(start), '-E', str(end)]).stdout
+    lines = out.split('\n')
+    return lines[:-1] if lines and lines[-1] == '' else lines
+
+
+def _prompt_row(run, st):
+    """(row, why): the cursor's logical line and None, or None and why it is not a single
+    logical line with nothing drawn below it."""
+    pane, y = st['pane_id'], st['cursor_y']
+    first = y - 1 if (y > 0 or st['history_size'] > 0) else y
+    lines = _logical_lines(run, pane, first, y)
+    below = _logical_lines(run, pane, y + 1, st['pane_height'] - 1) if y + 1 < st['pane_height'] else []
+    if len(lines) != y - first + 1:
+        return None, "the cursor row continues wrapped input; the input buffer is not empty"
+    if any(l.strip() for l in below):
+        return None, "text is drawn below the prompt; the input buffer is not empty"
+    return lines[-1], None
+
+
+def known_prompts(target, run):
+    """The prompt recorded when start_agent created this shell, else PROMPT_TAILS."""
+    out = run([tmux.TMUX, 'display-message', '-p', '-t', target, '#{%s}' % PROMPT_OPTION]).stdout
+    out = out[:-1] if out.endswith('\n') else out
+    return [out] if out else list(PROMPT_TAILS)
+
+
+def _base_problem(st, cwd):
+    if st['window_panes'] != 1:
+        return f"{st['window_panes']} panes in the window"
+    if st['pane_current_command'] not in SHELL_NAMES:
+        return f"busy: foreground is {st['pane_current_command'] or 'unknown'}, not an idle bash"
+    if os.path.realpath(st['pane_current_path']) != os.path.realpath(cwd):
+        return f"shell is in {st['pane_current_path']}, not {cwd}"
+    return None
+
+
 def shell_problem(target, cwd, run):
-    """None if target is an idle bash at an empty prompt in cwd (alone in its window),
-    else the reason it is not."""
+    """None only if target is bash, alone in its window, in cwd, with a positively empty input
+    buffer: the cursor row is a whole logical line (not the wrapped end of earlier input) that
+    reads exactly the known prompt (the recorded one, else a PROMPT_TAILS entry), the cursor
+    is right after it, and nothing is drawn below. Otherwise the reason. Fails closed."""
     try:
-        out = run([tmux.TMUX, 'display-message', '-p', '-t', target, SHELL_STATE_FORMAT]).stdout
-        parts = out.rstrip('\n').split('\t', 4)
-        if len(parts) != 5:
-            return f"cannot read the state of {target}"
-        pane, cmd, npanes, y, path = parts
-        if npanes != '1':
-            return f"{npanes} panes in the window"
-        if cmd not in SHELL_NAMES:
-            return f"busy: foreground is {cmd or 'unknown'}, not an idle bash"
-        if os.path.realpath(path) != os.path.realpath(cwd):
-            return f"shell is in {path}, not {cwd}"
-        lines = run([tmux.TMUX, 'capture-pane', '-p', '-t', pane]).stdout.split('\n')
+        st = shell_state(target, run)
+        why = _base_problem(st, cwd)
+        if why:
+            return why
+        row, why = _prompt_row(run, st)
+        if why:
+            return why
+        known = known_prompts(target, run)
     except tmux.TmuxError as e:
         return f"{target}: {e.stderr or 'no such pane'}"
-    line = lines[int(y)] if y.isdigit() and int(y) < len(lines) else ''
-    if not PROMPT_RE.search(line):
-        return f"shell prompt is not empty ({line.strip()[-40:]!r})"
+    if not any(row.rstrip(' ') == k.rstrip(' ') and st['cursor_x'] == len(k) for k in known):
+        return (f"input buffer not positively empty (cursor line {row.strip()[-40:]!r}, column "
+                f"{st['cursor_x']}; expected exactly {' or '.join(repr(k) for k in known)})")
     return None
+
+
+def first_prompt_problem(target, cwd, run):
+    """For a shell start_agent itself just created (detached, so nobody else has typed in it):
+    None once bash shows its first prompt, which is then recorded as the pane's known prompt.
+    The first prompt must be one logical line ending in '$ ' or '# ' with the cursor at its end."""
+    try:
+        st = shell_state(target, run)
+        why = _base_problem(st, cwd)
+        if why:
+            return why
+        row, why = _prompt_row(run, st)
+        if why:
+            return why
+        prompt = (row + ' ' * st['cursor_x'])[:st['cursor_x']]
+        if row.rstrip(' ') != prompt.rstrip(' ') or not prompt.endswith(PROMPT_TAILS):
+            return f"no prompt yet (cursor line {row.strip()[-40:]!r}, column {st['cursor_x']})"
+        run([tmux.TMUX, 'set-option', '-p', '-t', target, PROMPT_OPTION, prompt])
+    except tmux.TmuxError as e:
+        return f"{target}: {e.stderr or 'no such pane'}"
+    return shell_problem(target, cwd, run)
+
+
+def type_launch_line(target, line, run, sleep=time.sleep, wait=None):
+    """Type line into a shell that shell_problem() just passed, then press Enter only after the
+    echoed input buffer reads back as exactly prompt + line on one logical line ending at the
+    cursor. Raises AgentError (Enter not pressed) otherwise."""
+    st0 = shell_state(target, run)
+    known = known_prompts(target, run)
+    start_abs = st0['history_size'] + st0['cursor_y']
+    run([tmux.TMUX, 'send-keys', '-t', target, '-l', '--', line])
+    deadline = time.monotonic() + (ECHO_WAIT if wait is None else wait)
+    sleep(tmux.ENTER_DELAY)
+    while True:
+        st = shell_state(target, run)
+        got = None
+        if st['pane_current_command'] in SHELL_NAMES and st['pane_id'] == st0['pane_id']:
+            first = start_abs - st['history_size']
+            lines = _logical_lines(run, target, first, st['cursor_y'])
+            below = _logical_lines(run, target, st['cursor_y'] + 1, st['pane_height'] - 1) \
+                if st['cursor_y'] + 1 < st['pane_height'] else []
+            if len(lines) == 1 and not any(l.strip() for l in below):
+                got = lines[0]
+                if any(got.rstrip(' ') == (k + line).rstrip(' ') for k in known):
+                    run([tmux.TMUX, 'send-keys', '-t', target, 'Enter'])
+                    return
+        if time.monotonic() >= deadline:
+            raise AgentError(f"{target}: the input buffer does not read back as exactly the launch line "
+                             f"({(got or '').strip()[-60:]!r}); Enter was NOT pressed")
+        sleep(0.2)
+
+
+def find_window_pane(session, name, run):
+    """The first pane of the window of session named exactly name, or None. Raises AgentError
+    if more than one window has that name, or if the windows cannot be listed (fails closed:
+    an unknown answer must not lead to a second window)."""
+    try:
+        out = run([tmux.TMUX, 'list-panes', '-s', '-t', f'{session}:', '-F',
+                   '#{window_id}\t#{window_name}\t#{pane_id}']).stdout
+    except tmux.TmuxError as e:
+        raise AgentError(f"cannot list the windows of {session} ({e.stderr}); not starting {name}") from e
+    rows = [l.split('\t') for l in out.splitlines() if l.count('\t') == 2]
+    wins = {}
+    for wid, wname, pane in rows:
+        if wname == name:
+            wins.setdefault(wid, []).append(pane)
+    if len(wins) > 1:
+        raise AgentError(f"{len(wins)} windows in {session} are named {name}; not starting another")
+    return next(iter(wins.values()))[0] if wins else None
 
 
 def launch_agent(agent, cwd, session='agents', window_name=None, run=None, shell_pane=None,
                  sleep=time.sleep, wait=SHELL_WAIT):
-    """Start a registered agent in a new bash window of `session` (created if missing) in
-    cwd, or in shell_pane, an existing idle shell there, by typing its fixed launch line.
+    """Start a registered agent in the bash shell of window `window_name` of `session`, in cwd.
+    An existing window of that name (or shell_pane) is reused only if shell_problem() passes;
+    otherwise a new window (or the session) is created with a fresh bash. The fixed launch line
+    is typed, and Enter pressed only after it reads back exactly (type_launch_line).
     Raises AgentError, leaving any shell open, if the shell is busy, elsewhere or not ready.
     Internal: callers go through worktrees.spawn_agent, which gives every agent its own
     worktree and never starts one in the plain checkout."""
@@ -216,8 +347,11 @@ def launch_agent(agent, cwd, session='agents', window_name=None, run=None, shell
     validate_session(session)
     name = validate_window_name(window_name) if window_name else default_window_name(agent, real)
     run = run or tmux.run_checked
+    has = tmux.has_session(session)
+    if shell_pane is None and has:
+        shell_pane = find_window_pane(session, name, run)
     if shell_pane is None:
-        if tmux.has_session(session):
+        if has:
             cmd = [tmux.TMUX, 'new-window', '-d', '-P', '-F', tmux.PANE_FORMAT,
                    '-t', f'{session}:', '-n', name, '-c', real]
         else:
@@ -229,21 +363,23 @@ def launch_agent(agent, cwd, session='agents', window_name=None, run=None, shell
         if not target:
             raise AgentError(f"tmux did not report the new shell pane for {name}")
         deadline = time.monotonic() + wait
-        why = shell_problem(target, real, run)
+        why = first_prompt_problem(target, real, run)
         while why and time.monotonic() < deadline:
             sleep(0.2)
-            why = shell_problem(target, real, run)
+            why = first_prompt_problem(target, real, run)
+        reused = False
     else:
-        target, info = shell_pane, {'pane_id': shell_pane}
+        target, info, reused = shell_pane, {'pane_id': shell_pane}, True
         why = shell_problem(target, real, run)
     if why:
         raise AgentError(f"not starting {agent} in {target} ({name}): {why}; the shell is left open")
     line = launch_line(name, argv)
-    run([tmux.TMUX, 'send-keys', '-t', target, '-l', '--', line])
-    sleep(tmux.ENTER_DELAY)
-    run([tmux.TMUX, 'send-keys', '-t', target, 'Enter'])
+    try:
+        type_launch_line(target, line, run, sleep=sleep)
+    except tmux.TmuxError as e:
+        raise AgentError(f"{target}: {e.stderr or 'tmux failed'}; Enter was NOT pressed") from e
     return {'agent': agent, 'argv': argv, 'launch_line': line, 'cwd': real, 'session': session,
-            'window_name': name, 'pane': info, 'shell_reused': shell_pane is not None}
+            'window_name': name, 'pane': info, 'shell_reused': reused}
 
 
 # ---------------------------------------------------------------------------

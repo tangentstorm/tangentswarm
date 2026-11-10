@@ -466,9 +466,13 @@ with `TANGENTSWARM_AGENT_<NAME>=/abs/path`.
   `/usr/bin/env --`) wrapped in its own `systemd-run --user --scope` unit in
   `swarm-workers.slice`. Nothing from the caller is in that line. When the agent exits,
   the shell and directory survive, with the launch line in history. A later `start_agent`
-  for the same window reuses that shell only if it is idle at an empty prompt in the same
-  worktree; a busy or elsewhere shell is refused, never typed into. The typing tools below
-  still refuse the bare shell. `repo` must resolve, after symlinks, to a git main
+  finds the window by session and name (wherever its shell is, whatever it runs). It
+  reuses the shell only if the input buffer is positively empty: bash in the foreground,
+  in the same worktree, and the cursor line is exactly the prompt that start_agent
+  recorded for that shell (or exactly `$ ` or `# `), with the cursor at its end, not the
+  wrapped end of earlier input, and nothing below it. Anything else is refused and never
+  typed into, and no second window is made. Enter is pressed only after the typed line
+  reads back exactly after the prompt. The typing tools below still refuse the bare shell. `repo` must resolve, after symlinks, to a git main
   worktree directly inside `$TANGENTSWARM_AGENT_ROOT` (default `~/ver`). The agent runs
   in that repo's worktree for `branch`, never in the repo itself. `session` must match
   `[A-Za-z0-9_-]{1,40}`, and swarm creates it if it is missing. `window_name` is

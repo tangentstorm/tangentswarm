@@ -12,6 +12,8 @@ import pytest
 from tangentswarm import mcp_server, registry, tmux, worktrees
 from tangentswarm.worktrees import WorktreeError
 
+from fake_shell import FakeShell
+
 
 def sh(*args, cwd):
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
@@ -340,25 +342,10 @@ def test_remove_deletes_only_merged_branches(w):
 # ---------------------------------------------------------------------------
 # spawning agents (tmux is recorded, not run)
 
-class Recorder:
-    """tmux stand-in: a new window is an idle bash at its -c directory."""
-    def __init__(self):
-        self.calls = []
-
-    def __call__(self, argv):
-        self.calls.append(argv)
-        out = 'agents\t5\tclaude-feat\t0\t%99\t1\t0\tclaude\t80\t24\t1\t0\t/x\n'
-        if 'display-message' in argv:
-            cwd = next(a[a.index('-c') + 1] for a in self.calls if '-c' in a)
-            out = f'%99\tbash\t1\t0\t{cwd}\n'
-        elif 'capture-pane' in argv:
-            out = '$\n'
-        elif 'send-keys' in argv:
-            out = ''
-        return subprocess.CompletedProcess(argv, 0, stdout=out, stderr='')
-
+class Recorder(FakeShell):
+    """tmux stand-in: a new window is an idle bash at its -c directory (see fake_shell)."""
     def typed(self):
-        return [shlex.split(a[a.index('--') + 1]) for a in self.calls if a[:2] == ['tmux', 'send-keys'] and '-l' in a]
+        return self.typed_argv()
 
 
 @pytest.fixture
@@ -376,7 +363,7 @@ def claude_bin(tmp_path, monkeypatch):
 def test_spawn_starts_the_agent_in_its_worktree(w, claude_bin):
     rec = Recorder()
     out = worktrees.spawn_agent('claude', 'proj', 'minavo/feat', run=rec)
-    argv = rec.calls[0]
+    argv = rec.new_windows()[0]
     assert argv[argv.index('-c') + 1] == os.path.join(w.top, 'proj.minavo-feat')
     assert argv[argv.index('-n') + 1] == 'claude-minavo-feat'
     assert argv[argv.index('--') + 1:] == ['/bin/bash', '-l']
@@ -385,21 +372,27 @@ def test_spawn_starts_the_agent_in_its_worktree(w, claude_bin):
     assert out['reused'] is False and out['worktree']['branch'] == 'minavo/feat'
 
 
-def test_spawn_reuses_the_windows_surviving_shell(w, claude_bin, monkeypatch):
+def test_spawn_reuses_the_same_named_windows_idle_shell(w, claude_bin, monkeypatch):
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
     path = os.path.join(w.top, 'proj.feat')
-    shells = [{'session': 'agents', 'window_name': 'claude-feat', 'pane_id': '%42', 'current_command': 'bash',
-               'current_path': path},
-              {'session': 'agents', 'window_name': 'someone-elses-shell', 'pane_id': '%43',
-               'current_command': 'bash', 'current_path': path}]
-    monkeypatch.setattr(worktrees, '_all_panes', lambda: shells)
-    monkeypatch.setattr(worktrees, '_live_agents', lambda path: [])
-    seen = {}
-    monkeypatch.setattr(registry, 'launch_agent', lambda *a, **kw: seen.update(kw) or {'pane': {}})
-    worktrees.spawn_agent('claude', 'proj', 'feat', run=Recorder())
-    assert seen['shell_pane'] == '%42' and seen['window_name'] == 'claude-feat'
-    shells[0]['current_command'] = 'vim'          # busy: not offered; a new window is made instead
-    worktrees.spawn_agent('claude', 'proj', 'feat', run=Recorder())
-    assert seen['shell_pane'] is None
+    rec = Recorder(cwd=path, pane='%42', windows=[('@9', 'someone-elses-shell', '%43'),
+                                                   ('@4', 'claude-feat', '%42')])
+    out = worktrees.spawn_agent('claude', 'proj', 'feat', run=rec)
+    assert rec.new_windows() == [] and out['shell_reused'] is True
+    assert rec.calls[-1] == ['tmux', 'send-keys', '-t', '%42', 'Enter']
+
+
+# P2: a retry finds the window by session and name, even if its shell left the worktree or
+# runs a foreground command, and refuses it; it never opens a second window with that name
+@pytest.mark.parametrize('kw, why', [(dict(fg='sleep'), 'busy: foreground is sleep'),
+                                     (dict(cwd='/tmp'), 'shell is in /tmp'),
+                                     (dict(pending='make deploy #'), 'not positively empty')])
+def test_spawn_retry_never_duplicates_the_window(w, claude_bin, monkeypatch, kw, why):
+    path = os.path.join(w.top, 'proj.feat')
+    rec = Recorder(**{'cwd': path, 'pane': '%42', 'windows': [('@4', 'claude-feat', '%42')], **kw})
+    with pytest.raises(registry.AgentError, match=why):
+        worktrees.spawn_agent('claude', 'proj', 'feat', run=rec)
+    assert rec.new_windows() == [] and rec.typed() == [] and rec.entered == []
 
 
 def test_spawn_retry_returns_the_live_agent(w, claude_bin, monkeypatch):
@@ -439,7 +432,7 @@ def test_mcp_tools_round_trip(w, claude_bin, monkeypatch):
     monkeypatch.setattr(tmux, 'run_checked', rec)
     # there is no command parameter, so an extra one is ignored and the fixed argv still runs
     call_tool('start_agent', agent='claude', repo='proj', branch='feat', command='bash -c id')
-    argv = rec.calls[0]
+    argv = rec.new_windows()[0]
     assert argv[argv.index('-c') + 1] == os.path.join(w.top, 'proj.feat')
     assert argv[argv.index('--') + 1:] == ['/bin/bash', '-l']
     line, = rec.typed()
@@ -458,7 +451,7 @@ def test_cli_matches(w, claude_bin, monkeypatch, capsys):
     rec = Recorder()
     monkeypatch.setattr(tmux, 'run_checked', rec)
     assert cli.run_subcommand('start-agent', ['claude', 'proj', 'x/y', '--window', 'w1']) == 0
-    argv = rec.calls[0]
+    argv = rec.new_windows()[0]
     assert argv[argv.index('-c') + 1] == os.path.join(w.top, 'proj.x-y')
     assert argv[argv.index('-n') + 1] == 'w1'
     assert cli.run_subcommand('worktrees', ['proj']) == 0

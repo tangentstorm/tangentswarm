@@ -246,7 +246,8 @@ async def start_agent(agent: registry.AgentName, repo: str, branch: str, session
     (reused=true) instead of starting another. window_name is kebab-case, default
     '<agent>-<branch>'. The window is a persistent bash shell in the worktree: the agent's
     fixed, scoped launch line is typed into it, and when the agent exits the shell stays
-    (up-arrow restarts it). A later start reuses that shell only if it is idle there."""
+    (up-arrow restarts it). A later start finds that window by name and reuses it only if
+    its input buffer is positively empty there; otherwise it refuses, and never opens a duplicate."""
     try:
         return await anyio.to_thread.run_sync(
             lambda: worktrees.spawn_agent(agent, repo, branch, session=session,

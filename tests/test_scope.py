@@ -9,6 +9,7 @@ import pytest
 
 from tangentswarm import agents, registry, tmux
 
+from fake_shell import FakeShell
 from test_registry import fake_bins, root  # noqa: F401
 
 
@@ -163,31 +164,21 @@ def test_non_spawn_commands_are_untouched():
 
 def test_start_agent_through_the_real_runner_is_scoped(fake_bins, root, monkeypatch):  # noqa: F811
     """The bash window is scoped like every pane, and the agent typed into it gets its own scope."""
-    calls = []
-
-    def run(argv, **kw):
-        calls.append(argv)
-        out = ''
-        if 'new-window' in argv:
-            out = 'agents\t5\tswarm-selftest\t0\t%99\t1\t0\tbash\t80\t24\t1\t0\t/x\n'
-        elif 'display-message' in argv:
-            out = f"%99\tbash\t1\t0\t{(root / 'proj').resolve()}\n"
-        elif 'capture-pane' in argv:
-            out = '$\n'
-        return subprocess.CompletedProcess(argv, 0, out, '')
-    monkeypatch.setattr(tmux.subprocess, 'run', run)
+    shell = FakeShell()
+    monkeypatch.setattr(tmux.subprocess, 'run', shell)
     monkeypatch.setattr(tmux, 'has_session', lambda s: True)
     monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
     registry.launch_agent('claude', 'proj', window_name='swarm-selftest')
-    head, unit, command = scope_of(calls[0])
+    head, unit, command = scope_of(shell.new_windows()[0])
     assert head[:2] == ['tmux', 'new-window'] and head[head.index('-n') + 1] == 'swarm-selftest'
     assert command == ['/bin/bash', '-l'] and unit.startswith('swarm-swarm-selftest-')
-    typed = [a for a in calls if a[:2] == ['tmux', 'send-keys']]
+    typed = [a for a in shell.calls if a[:2] == ['tmux', 'send-keys']]
     assert typed[0][:5] == ['tmux', 'send-keys', '-t', '%99', '-l'] and typed[1][-1] == 'Enter'
     line = shlex.split(typed[0][-1])
     head2, unit2, command2 = scope_of(['--', *line])
     assert command2 == ['/usr/bin/env', '--', fake_bins['claude']]
     assert unit2.startswith('swarm-swarm-selftest-') and unit2 != unit
+    assert shell.entered == [typed[0][-1]]
 
 
 FAKE_SYSTEMD_RUN = '''#!/bin/sh
@@ -228,6 +219,57 @@ def test_tell_agent_still_detects_claude_in_a_scoped_pane(fake_bins, root, tmp_p
         # the window is the bash shell the agent was typed into; it is still there
         assert subprocess.run(['tmux', 'display-message', '-p', '-t', target, '#{pane_current_path}'],
                               capture_output=True, text=True).stdout.strip() == str((root / 'proj').resolve())
+    finally:
+        subprocess.run(['tmux', 'kill-server'], capture_output=True)
+
+
+def test_real_bash_pending_input_or_a_moved_shell_is_refused_not_run(fake_bins, root, tmp_path, monkeypatch):  # noqa: F811
+    """P1 and P2 against real tmux and bash: an unsent command ending in '#' is never run, a
+    shell that left the worktree is refused, and neither retry opens a second window."""
+    if not shutil.which('tmux'):
+        pytest.skip('tmux not installed')
+    claude = Path(fake_bins['claude'])
+    claude.write_text('#!/bin/sh\nexit 0\n')                 # exits at once: the shell comes back
+    sbin = tmp_path / 'sbin'
+    sbin.mkdir()
+    (sbin / 'systemd-run').write_text(FAKE_SYSTEMD_RUN)
+    (sbin / 'systemd-run').chmod(0o755)
+    monkeypatch.setenv('PATH', f"{sbin}:{os.environ['PATH']}")
+    monkeypatch.setenv('SCOPE_LOG', str(tmp_path / 'scope.log'))
+    monkeypatch.setenv('TMUX_TMPDIR', str(tmp_path))
+    monkeypatch.delenv('TMUX', raising=False)
+    proof = tmp_path / 'pwned'
+
+    def windows():
+        return subprocess.run(['tmux', 'list-windows', '-t', 'scoped', '-F', '#{window_name}'],
+                              capture_output=True, text=True).stdout.split()
+
+    def wait_idle(target):
+        for _ in range(100):
+            if registry.shell_problem(target, str((root / 'proj').resolve()), tmux.run_checked) is None:
+                return
+            subprocess.run(['sleep', '0.1'])
+        raise AssertionError(registry.shell_problem(target, str((root / 'proj').resolve()), tmux.run_checked))
+    try:
+        out = registry.launch_agent('claude', 'proj', session='scoped')
+        target = out['pane']['pane_id']
+        wait_idle(target)                                       # the agent exited; bash is back
+        tmux.send_keys_literal(target, f'touch {proof} #', enter=False)
+        subprocess.run(['sleep', '0.5'])
+        with pytest.raises(registry.AgentError, match='not positively empty'):
+            registry.launch_agent('claude', 'proj', session='scoped')
+        subprocess.run(['sleep', '0.5'])
+        assert not proof.exists() and windows() == ['claude-proj']
+        subprocess.run(['tmux', 'send-keys', '-t', target, 'C-u'], check=True)
+        tmux.send_keys_literal(target, 'cd /')
+        subprocess.run(['sleep', '0.5'])
+        with pytest.raises(registry.AgentError, match='shell is in /'):
+            registry.launch_agent('claude', 'proj', session='scoped')
+        tmux.send_keys_literal(target, f'cd {root / "proj"}')
+        wait_idle(target)
+        out2 = registry.launch_agent('claude', 'proj', session='scoped')
+        assert out2['shell_reused'] is True and out2['pane']['pane_id'] == target
+        assert windows() == ['claude-proj'] and not proof.exists()
     finally:
         subprocess.run(['tmux', 'kill-server'], capture_output=True)
 

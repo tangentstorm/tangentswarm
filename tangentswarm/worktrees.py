@@ -530,13 +530,9 @@ def spawn_agent(agent, repo, branch, session='agents', window_name=None, top=Non
         if live:
             raise WorktreeError(f"{live[0]['agent']} is already working in {wt['path']} "
                                 f"({live[0]['pane_id']}); one agent per worktree")
-        # the window's own shell survives an earlier agent: reuse it (launch_agent refuses
-        # it unless it is idle at an empty prompt here) rather than open a duplicate window
-        shell = next((p['pane_id'] for p in panes_in(wt['path'])
-                      if p['session'] == session and p['window_name'] == name
-                      and p['current_command'] in registry.SHELL_NAMES), None)
-        out = registry.launch_agent(agent, wt['path'], session=session, window_name=name, run=run,
-                                    shell_pane=shell)
+        # launch_agent finds an existing window by session and name, wherever its shell is and
+        # whatever it runs, and refuses it unless it is an idle shell here: never a duplicate
+        out = registry.launch_agent(agent, wt['path'], session=session, window_name=name, run=run)
     return {**out, 'reused': False, 'worktree': wt}
 
 
