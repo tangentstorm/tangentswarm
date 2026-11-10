@@ -1,5 +1,6 @@
 """The agent allowlist, cwd confinement and the 'type only into agents' guard."""
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -7,6 +8,8 @@ import anyio
 import pytest
 
 from tangentswarm import agents, mcp_server, registry, tmux
+
+from fake_shell import FakeShell
 
 FIX = Path(__file__).parent / 'fixtures'
 
@@ -39,14 +42,18 @@ def fake_bins(tmp_path, monkeypatch):
     return bins
 
 
-class Recorder:
-    def __init__(self):
-        self.calls = []
+class Recorder(FakeShell):
+    """A tmux stand-in: a new window is an idle bash at its -c directory (see fake_shell)."""
 
-    def __call__(self, argv):
-        self.calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout='agents\t5\tmuse-proj\t0\t%99\t1\t0\tmuse\t80\t24\t1\t0\t/x\n',
-                                           stderr='')
+
+def scoped(line):
+    """The command inside a typed launch line's systemd-run scope, and its unit."""
+    argv = shlex.split(line)
+    assert argv[:2] == ['/usr/bin/env', f'XDG_RUNTIME_DIR=/run/user/{os.getuid()}']
+    assert argv[2:7] == ['systemd-run', '--user', '--slice=swarm-workers.slice', '--scope',
+                         '--expand-environment=no']
+    assert argv[7].startswith('--unit=') and argv[8] == '--'
+    return argv[9:], argv[7][len('--unit='):]
 
 
 def call_tool(name, **kw):
@@ -122,24 +129,176 @@ def test_bad_names_rejected(fake_bins, root):
             registry.launch_agent('muse', 'proj', window_name=bad, run=Recorder())
 
 
-def test_start_agent_execs_argv_without_a_shell(fake_bins, root, monkeypatch):
+def test_start_agent_opens_a_bash_window_then_types_the_scoped_fixed_argv(fake_bins, root, monkeypatch):
     monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
     rec = Recorder()
     out = registry.launch_agent('muse', str(root / 'proj'), window_name='swarm-selftest', run=rec)
-    argv = rec.calls[0]
+    argv, = rec.new_windows()
     assert argv[:2] == ['tmux', 'new-window'] and '-d' in argv
     assert argv[argv.index('-c') + 1] == str((root / 'proj').resolve())
     assert argv[argv.index('-n') + 1] == 'swarm-selftest'
-    assert argv[argv.index('--') + 1:] == [fake_bins['muse'], '--trust-workspace']
-    assert out['pane']['pane_id'] == '%99'
-    # a flag-less agent is run through env so tmux never falls back to `sh -c`
+    assert argv[argv.index('--') + 1:] == ['/bin/bash', '-l']
+    line, = rec.typed()
+    command, unit = scoped(line)
+    assert command == [fake_bins['muse'], '--trust-workspace'] and unit.startswith('swarm-swarm-selftest-')
+    assert out['pane']['pane_id'] == '%99' and out['launch_line'] == line and out['shell_reused'] is False
+    # typed literally, read back, then Enter as a separate, last call; exactly that line ran
+    sends = [i for i, a in enumerate(rec.calls) if a[1] == 'send-keys']
+    assert len(sends) == 2 and '-l' in rec.calls[sends[0]]
+    assert rec.calls[-1] == ['tmux', 'send-keys', '-t', '%99', 'Enter']
+    assert any(a[1] == 'capture-pane' for a in rec.calls[sends[0]:sends[1]])
+    assert rec.entered == [line]
+    # a flag-less agent still goes through env; a missing session is created
     rec = Recorder()
     monkeypatch.setattr(tmux, 'has_session', lambda s: False)
     out = registry.launch_agent('claude', 'proj', session='scratch', run=rec)
-    argv = rec.calls[0]
+    argv, = rec.new_windows()
     assert argv[:2] == ['tmux', 'new-session'] and argv[argv.index('-s') + 1] == 'scratch'
-    assert argv[argv.index('--') + 1:] == ['/usr/bin/env', '--', fake_bins['claude']]
+    assert argv[argv.index('--') + 1:] == ['/bin/bash', '-l']
+    assert scoped(rec.typed()[0])[0] == ['/usr/bin/env', '--', fake_bins['claude']]
     assert out['window_name'] == 'claude-proj'
+
+
+def test_start_agent_is_fresh_and_never_continues(fake_bins, root, monkeypatch):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
+    rec = Recorder()
+    registry.launch_agent('claude', 'proj', run=rec)
+    assert '--continue' not in shlex.split(rec.typed()[0])
+
+
+def test_a_long_launch_line_that_wraps_is_read_back_and_submitted(fake_bins, root, monkeypatch):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
+    rec = Recorder(width=30, height=5)        # wraps over many rows and scrolls into history
+    out = registry.launch_agent('claude', 'proj', run=rec)
+    assert rec.entered == [out['launch_line']] and len(out['launch_line']) > 5 * 30
+
+
+def test_start_agent_reuses_an_idle_shell_without_a_new_window(fake_bins, root, monkeypatch):
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
+    rec = Recorder(cwd=str((root / 'proj').resolve()), pane='%7')
+    out = registry.launch_agent('claude', 'proj', run=rec, shell_pane='%7')
+    assert rec.new_windows() == []
+    assert out['shell_reused'] is True and rec.entered == [out['launch_line']]
+    assert rec.calls[-1] == ['tmux', 'send-keys', '-t', '%7', 'Enter']
+
+
+def test_an_existing_window_is_found_by_session_and_name_and_reused(fake_bins, root, monkeypatch):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
+    rec = Recorder(cwd=str((root / 'proj').resolve()), pane='%7',
+                   windows=[('@1', 'other', '%1'), ('@7', 'claude-proj', '%7')])
+    out = registry.launch_agent('claude', 'proj', run=rec)
+    assert rec.new_windows() == [] and out['shell_reused'] is True and rec.entered == [out['launch_line']]
+    listed = next(a for a in rec.calls if a[1] == 'list-panes')
+    assert listed[listed.index('-t') + 1] == 'agents:' and '-s' in listed
+
+
+# P2: the same-named window is refused, never duplicated, wherever its shell went or whatever runs
+@pytest.mark.parametrize('state, why', [
+    (dict(fg='sleep'), 'busy: foreground is sleep'), (dict(cwd='/elsewhere'), 'shell is in /elsewhere'),
+    (dict(fg='claude'), 'busy: foreground is claude'), (dict(panes=2), '2 panes')])
+def test_a_retry_never_duplicates_a_busy_or_moved_window(fake_bins, root, monkeypatch, state, why):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    kw = dict(cwd=str((root / 'proj').resolve()), pane='%7', windows=[('@7', 'claude-proj', '%7')])
+    kw.update(state)
+    rec = Recorder(**kw)
+    with pytest.raises(registry.AgentError, match=why):
+        registry.launch_agent('claude', 'proj', run=rec)
+    assert rec.new_windows() == [] and rec.typed() == [] and rec.entered == []
+
+
+def test_a_failed_window_listing_fails_closed(fake_bins, root, monkeypatch):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+
+    class Broken(Recorder):
+        def __call__(self, argv, **kw):
+            if argv[1:2] == ['list-panes']:
+                raise tmux.TmuxError(argv, 1, 'server busy')
+            return super().__call__(argv, **kw)
+    rec = Broken()
+    with pytest.raises(registry.AgentError, match='cannot list the windows'):
+        registry.launch_agent('claude', 'proj', run=rec)
+    assert rec.new_windows() == [] and rec.typed() == []
+
+
+def test_two_windows_with_the_name_are_refused(fake_bins, root, monkeypatch):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    rec = Recorder(windows=[('@1', 'claude-proj', '%1'), ('@2', 'claude-proj', '%2')])
+    with pytest.raises(registry.AgentError, match='2 windows'):
+        registry.launch_agent('claude', 'proj', run=rec)
+    assert rec.new_windows() == [] and rec.typed() == []
+
+
+# P1: only an exact, empty prompt with the cursor right after it counts as an empty input buffer
+@pytest.mark.parametrize('kw, why', [
+    (dict(pending='rm -rf /tmp/example #'), 'not positively empty'),
+    (dict(pending='rm -rf /tmp/example $'), 'not positively empty'),
+    (dict(pending='echo hi $ '), 'not positively empty'),
+    (dict(pending=' '), 'not positively empty'),
+    (dict(pending='x' * 78 + '$ '), 'continues wrapped input'),     # wraps to a row reading '$ '
+    (dict(pending='x' * 158 + '# '), 'continues wrapped input'),
+    (dict(tail='> '), 'not positively empty'),                       # PS2: inside a quoted string
+    (dict(tail='user@host:~/proj$ '), 'not positively empty'),       # unknown prompt: fail closed
+    (dict(below='half typed second line'), 'drawn below the prompt'),
+])
+def test_pending_input_is_never_taken_for_an_empty_prompt(fake_bins, root, monkeypatch, kw, why):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    rec = Recorder(cwd=str((root / 'proj').resolve()), pane='%7', **kw)
+    with pytest.raises(registry.AgentError, match=why):
+        registry.launch_agent('claude', 'proj', run=rec, shell_pane='%7')
+    with pytest.raises(registry.AgentError, match=why):     # found by name: same refusal
+        rec.windows = [('@7', 'claude-proj', '%7')]
+        registry.launch_agent('claude', 'proj', run=rec)
+    assert rec.typed() == [] and rec.entered == [] and rec.new_windows() == []
+    assert not any('kill-window' in a or 'kill-pane' in a for a in rec.calls)
+
+
+@pytest.mark.parametrize('kw', [dict(cwd='/elsewhere'), dict(fg='sleep'), dict(pending='ls'), dict(below='x')])
+def test_a_new_window_that_never_reaches_an_empty_prompt_is_left_open(fake_bins, root, monkeypatch, kw):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    rec = Recorder(**kw)
+    with pytest.raises(registry.AgentError, match='left open'):
+        registry.launch_agent('claude', 'proj', run=rec, sleep=lambda s: None, wait=0.01)
+    assert rec.typed() == [] and rec.entered == []
+    assert not any('kill-window' in a or 'kill-pane' in a for a in rec.calls)
+
+
+def test_a_new_shells_own_prompt_is_recorded_and_is_the_only_one_accepted_later(fake_bins, root, monkeypatch):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
+    rec = Recorder(tail='runner@ci:~/proj$ ', header='')       # a one-line prompt, as on most hosts
+    out = registry.launch_agent('claude', 'proj', run=rec)
+    assert rec.options == {'@swarm_prompt': 'runner@ci:~/proj$ '} and rec.entered == [out['launch_line']]
+    rec.windows = [('@7', 'claude-proj', '%99')]
+    out = registry.launch_agent('claude', 'proj', run=rec)    # the agent exited; same shell again
+    assert out['shell_reused'] is True and len(rec.entered) == 2 and len(rec.new_windows()) == 1
+    for pending in ('rm -rf /tmp/example #', 'x' * 70 + 'runner@ci:~/proj$ '):
+        rec.pending = pending
+        with pytest.raises(registry.AgentError, match='not positively empty|continues wrapped'):
+            registry.launch_agent('claude', 'proj', run=rec)
+    rec.pending, rec.tail = '', '$ '                          # a changed prompt is not trusted
+    with pytest.raises(registry.AgentError, match='not positively empty'):
+        registry.launch_agent('claude', 'proj', run=rec)
+    assert len(rec.entered) == 2
+
+
+def test_enter_is_not_pressed_unless_the_line_reads_back_exactly(fake_bins, root, monkeypatch):
+    monkeypatch.setattr(tmux, 'has_session', lambda s: True)
+    monkeypatch.setattr(tmux, 'ENTER_DELAY', 0)
+    monkeypatch.setattr(registry, 'ECHO_WAIT', 0.05)
+
+    class Racy(Recorder):              # someone types between the check and our keys
+        def __call__(self, argv, **kw):
+            if argv[1:2] == ['send-keys'] and '-l' in argv:
+                self.pending += 'rm -rf ~ #'
+            return super().__call__(argv, **kw)
+    for rec in (Racy(), Recorder(echo=False)):
+        with pytest.raises(registry.AgentError, match='Enter was NOT pressed'):
+            registry.launch_agent('claude', 'proj', run=rec, sleep=lambda s: None)
+        assert rec.entered == [] and not any(a[-1] == 'Enter' for a in rec.calls)
 
 
 # ---------------------------------------------------------------------------
