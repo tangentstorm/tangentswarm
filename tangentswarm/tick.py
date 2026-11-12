@@ -22,17 +22,22 @@ bot holding it together by hand. Each pass:
      milestone ("ptw 15") first, then the oldest entry into its column.
   4. Runs `active-gate --sweep --demote` and `active-gate --promote-missing`.
   5. Runs `pending-promote --apply`.
-  6. Prints one "did: ..." line per change, then one line per item that needs judgment:
+  6. Closes every tmux window in session `agents` that belongs to a MERGED or CLOSED
+     PR (the numbered name, a legacy name without the number, or a pane in that
+     branch's worktree), except a window whose foreground command is claude or node,
+     or whose worktree has uncommitted or unpushed changes. Then prints one "did: ..."
+     line per change, then one line per item that needs judgment:
      "#PR %pane window: reason". With nothing done and nothing to judge it prints nothing.
 
 --dry-run changes nothing on GitHub, the board or tmux, and writes no state file. It
-prints "would: ..." for steps 2-5 instead (pending-promote --dry-run may still write
+prints "would: ..." for steps 2-6 instead (pending-promote --dry-run may still write
 its /tmp relay files).
 --verbose also prints every pane's class and the full output of each tool.
 
 Hard rules, enforced here: it never merges, never deploys, never types into a pane,
-never kills or closes a pane or process, and never reads a credential file. GitHub
-access goes through `gh`. Card moves into Human Review go only through hr-gate.
+never kills a process, never closes a window whose foreground command is claude or
+node, and never reads a credential file. GitHub access goes through `gh`. Card moves
+into Human Review go only through hr-gate.
 Every change and tool output is appended to ~/.local/state/swarm-tick/tick.log.
 Exit 0 = pass finished (items may still need judgment), 2 = tool error.
 """
@@ -141,6 +146,63 @@ def window_pr(window):
     """PR number from a window name such as code-382-avo-youtube-publish or ptw-352-..."""
     m = WINDOW_PR_RE.match(window or '')
     return int(m.group(1)) if m else None
+
+
+def normalize_pane_path(path):
+    """Strip tmux's ' (deleted)' suffix from a pane path."""
+    return (path or '').removesuffix(' (deleted)')
+
+
+def is_platform_worktree_path(path):
+    """True if path is ~/ver/platform or a ~/ver/platform.<slug> worktree (possibly deleted)."""
+    p = normalize_pane_path(path)
+    root = str(PLATFORM_GIT)
+    return p == root or p.startswith(root + '.') or p.startswith(root + '/')
+
+
+def branch_slug(branch):
+    return (branch or '').replace('/', '-')
+
+
+def window_matches_pr(window, path, pr):
+    """True if this agents window belongs to the PR: numbered name, legacy name, or worktree path."""
+    number = pr['number']
+    slug = branch_slug(pr.get('branch'))
+    name = window or ''
+    path = normalize_pane_path(path)
+    if window_pr(name) == number:
+        return True
+    if slug and name in (slug, pr.get('branch'), 'claude-' + slug):
+        return True
+    if slug and path.rstrip('/').endswith('/platform.' + slug):
+        return True
+    return False
+
+
+def windows_to_close(panes, prs):
+    """Idle panes that belong to a MERGED or CLOSED PR and are safe to close.
+
+    Never includes a pane whose command is claude or node, or whose worktree is
+    dirty or ahead of its upstream. A missing worktree (already removed) is safe.
+    """
+    closed = {n: pr for n, pr in prs.items() if (pr.get('state') or '').upper() in ('MERGED', 'CLOSED')}
+    out = []
+    seen = set()
+    for p in panes:
+        cmd = p.get('command') or ''
+        if p.get('claude') or cmd in ('claude', 'node'):
+            continue
+        wt = p.get('wt') or {}
+        if wt.get('dirty') or (wt.get('ahead') or 0) > 0:
+            continue
+        for pr in closed.values():
+            if window_matches_pr(p.get('window'), p.get('path'), pr):
+                key = p.get('id') or p.get('window')
+                if key not in seen:
+                    seen.add(key)
+                    out.append((p, pr))
+                break
+    return out
 
 
 def milestone_rank(milestones):
@@ -380,7 +442,7 @@ def read_panes(state):
         if dead not in ('', '0'):
             continue
         wt = worktree_facts(path)
-        if wt is None:
+        if wt is None and not is_platform_worktree_path(path):
             continue
         p = dict(id=pid, window=window, command=cmd, path=path, wt=wt, parked=window in parked,
                  claude=is_claude(pid, cmd), cls=None, screen='')
@@ -402,7 +464,10 @@ def read_panes(state):
                     state.data['screens'][pid] = {'key': key, 'since': now}
                 seen.add(pid)
             elif cls == 'idle':
-                cls = 'finished' if not wt['dirty'] and wt['ahead'] == 0 else 'idle-dirty'
+                if wt is None:
+                    cls = 'finished'
+                else:
+                    cls = 'finished' if not wt['dirty'] and wt['ahead'] == 0 else 'idle-dirty'
             p['cls'] = cls
         else:
             p['cls'] = 'shell'
@@ -461,8 +526,9 @@ class Tick:
         if self.verbose:
             for p in self.panes:
                 col = self.prs[p['pr']]['col'] if p['pr'] else '-'
-                self.out(f"pane {p['id']} {p['window']}: {p['cls']} pr={p['pr']} card={col} branch={p['wt']['branch']} "
-                         f"dirty={p['wt']['dirty']} ahead={p['wt']['ahead']}")
+                wt = p['wt'] or {}
+                self.out(f"pane {p['id']} {p['window']}: {p['cls']} pr={p['pr']} card={col} branch={wt.get('branch')} "
+                         f"dirty={wt.get('dirty')} ahead={wt.get('ahead')}")
 
     # step 2 + pane judgment -------------------------------------------------
     def panes_pass(self, scratch):
@@ -656,11 +722,22 @@ class Tick:
             if not p['claude'] or p['cls'] != 'finished':
                 continue
             pr = self.prs.get(p['pr']) if p['pr'] else None
+            wt = p['wt'] or {}
             if pr is None:
-                self.note(None, p, f"finished; no open board PR for branch {p['wt']['branch']}: can be closed")
+                self.note(None, p, f"finished; no open board PR for branch {wt.get('branch')}: can be closed")
             elif pr['state'] != 'OPEN' or pr['col'] in LATER_COLS:
                 where = pr['col'] if pr['state'] == 'OPEN' else pr['state'].lower()
                 self.note(pr['number'], p, f"finished; PR is {where}: Claude can be closed")
+        for p, pr in windows_to_close(self.panes, self.prs):
+            label = f"window {p['window']} ({p['id']}) for {pr['state'].lower()} PR #{pr['number']}"
+            if self.dry:
+                self.change(f"close {label}")
+                continue
+            r = sh(['tmux', 'kill-window', '-t', p['id']])
+            if r.returncode:
+                self.note(pr['number'], p, f"failed to close window: {(r.stderr or r.stdout).strip()[:120]}")
+            else:
+                self.change(f"closed {label}")
 
     def run(self):
         self.read()
