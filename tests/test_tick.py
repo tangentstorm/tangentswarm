@@ -270,3 +270,28 @@ def test_parked_pr_is_left_alone():
     t = make_tick({7: dict(PR, parked=True)}, [pane('finished')], pr())
     t.panes_pass(FakeScratch())
     assert t.did == [] and t.notes == []
+
+
+def test_typed_prompt_reads_input_box():
+    s = screen(['● Done.'], prompt='merge origin/main into the branch')
+    assert tick.typed_prompt(s) == 'merge origin/main into the branch'
+    assert tick.typed_prompt(screen(['● Done.'], prompt='')) == ''
+
+
+def test_attach_prs_skips_pane_with_no_worktree():
+    prs = {7: dict(PR, draft=False)}
+    panes = [
+        {'id': '%1', 'window': 'code-7-b', 'wt': None, 'path': '/tmp/gone (deleted)'},
+        {'id': '%2', 'window': 'other', 'wt': {'branch': 'b'}, 'path': '/x'},
+    ]
+    tick.attach_prs(panes, prs)
+    assert panes[0]['pr'] == 7  # from the window name
+    assert panes[1]['pr'] == 7  # from the worktree branch
+
+
+def test_panes_pass_submits_typed_input():
+    p = pane('input', screen=screen(['● Ready.'], prompt='merge origin/main into ptw/draw-at-playhead'))
+    t = make_tick({7: dict(PR, draft=False)}, [p], pr())
+    t.panes_pass(FakeScratch())
+    assert t.notes == []
+    assert t.did == ["would: #7 submit typed prompt in %9: merge origin/main into ptw/draw-at-playhead"]
