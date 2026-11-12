@@ -11,7 +11,7 @@ bot holding it together by hand. Each pass:
                    local HEAD is the pushed PR head
        idle-dirty  Claude is idle, but the worktree is dirty or HEAD is not pushed
        asking      Claude is idle and its last lines end in a question
-       input       Claude is idle with text typed in its prompt that was not sent
+       input       Claude is idle with text typed in its prompt that was not sent (this pass submits it)
        menu        Claude shows a numbered choice menu (a permission prompt and so on)
        exited      a shell where Claude ran, while the PR is still open
   2. For an In Progress PR whose Claude is finished, with no open Codex findings and a
@@ -34,9 +34,11 @@ prints "would: ..." for steps 2-6 instead (pending-promote --dry-run may still w
 its /tmp relay files).
 --verbose also prints every pane's class and the full output of each tool.
 
-Hard rules, enforced here: it never merges, never deploys, never types into a pane,
-never kills a process, never closes a window whose foreground command is claude or
-node, and never reads a credential file. GitHub access goes through `gh`. Card moves
+Hard rules, enforced here: it never merges, never deploys, never types new text into
+a pane, never types over a menu, never kills a process, never closes a window whose
+foreground command is claude or node, and never reads a credential file. When a Claude
+is idle with text already typed in its prompt (a relay that was not sent), it submits
+that text by pressing Enter. GitHub access goes through `gh`. Card moves
 into Human Review go only through hr-gate.
 Every change and tool output is appended to ~/.local/state/swarm-tick/tick.log.
 Exit 0 = pass finished (items may still need judgment), 2 = tool error.
@@ -119,6 +121,22 @@ def question_line(screen):
         if ASK_RE.search(line):
             return line.lstrip('●- ').strip()
     return None
+
+
+def typed_prompt(screen):
+    """Text currently typed in Claude's input box, or '' if the box is empty or missing."""
+    lines = screen.rstrip('\n').split('\n')
+    bars = _bars(lines)
+    if len(bars) < 2:
+        return ''
+    block = [l for l in lines[bars[-2] + 1:bars[-1]]]
+    if not block:
+        return ''
+    first = block[0].lstrip()
+    if first.startswith('❯'):
+        first = first[1:].lstrip()
+        block = [first, *block[1:]]
+    return '\n'.join(block).strip()
 
 
 def classify_screen(screen, prompt_blank):
@@ -479,7 +497,7 @@ def read_panes(state):
 def attach_prs(panes, prs):
     by_branch = {p['branch']: n for n, p in prs.items() if p['state'] == 'OPEN'}
     for p in panes:
-        n = by_branch.get(p['wt']['branch'])
+        n = by_branch.get((p['wt'] or {}).get('branch'))
         if n is None:
             n = window_pr(p['window'])
             if n not in prs:
@@ -549,7 +567,17 @@ class Tick:
             elif c['cls'] == 'menu':
                 self.note(n, c, f"at a menu: {menu_line(c['screen'])}")
             elif c['cls'] == 'input':
-                self.note(n, c, 'text typed in the prompt but not sent')
+                typed = typed_prompt(c.get('screen') or '')
+                preview = (typed.replace('\n', ' ')[:110] or '(empty capture)')
+                if self.dry:
+                    self.change(f"#{n} submit typed prompt in {c['id']}: {preview}")
+                else:
+                    r = sh(['tmux', 'send-keys', '-t', c['id'], 'Enter'])
+                    if r.returncode:
+                        self.note(n, c, 'failed to submit typed prompt: '
+                                        + ((r.stderr or r.stdout or '').strip()[:120] or f'rc={r.returncode}'))
+                    else:
+                        self.change(f"#{n} submitted typed prompt in {c['id']}: {preview}")
             elif c['cls'] == 'asking':
                 self.note(n, c, 'idle, asks for a decision or action: ' + (question_line(c['screen']) or '?')[:110])
             elif c['cls'] == 'idle-dirty':
