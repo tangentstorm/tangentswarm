@@ -68,6 +68,79 @@ def test_window_pr():
     assert tick.window_pr('outline-join-lines') is None
 
 
+def test_window_matches_pr_numbered_legacy_and_path():
+    pr = {'number': 368, 'branch': 'ptw-attr-doc-tooltips', 'state': 'MERGED'}
+    assert tick.window_matches_pr('ptw-368-ptw-attr-doc-tooltips', '/x', pr)
+    assert tick.window_matches_pr('ptw-368-ptw-attr-doc-tooltips-b', '/x', pr)
+    assert tick.window_matches_pr('ptw-attr-doc-tooltips', '/x', pr)
+    assert tick.window_matches_pr('claude-ptw-attr-doc-tooltips', '/x', pr)
+    assert tick.window_matches_pr('bash', '/home/memnar/ver/platform.ptw-attr-doc-tooltips (deleted)', pr)
+    assert not tick.window_matches_pr('ptw-369-other', '/home/memnar/ver/platform.other', pr)
+    slash = {'number': 398, 'branch': 'mn/avo-save-as', 'state': 'MERGED'}
+    assert tick.window_matches_pr('mn-avo-save-as', '/x', slash)
+    assert tick.window_matches_pr('mn-398-avo-save-as', '/x', slash)
+
+
+def test_windows_to_close_skips_claude_node_dirty_and_open():
+    merged = {396: {'number': 396, 'state': 'MERGED', 'branch': 'avo/outline-draft-saving'}}
+    open_pr = {357: {'number': 357, 'state': 'OPEN', 'branch': 'outline-join-lines'}}
+    numbered = {'id': '%107', 'window': 'avo-396-outline-draft-saving', 'command': 'bash',
+                'claude': False, 'path': '/home/memnar/ver/platform.avo-outline-draft-saving (deleted)',
+                'wt': None}
+    legacy = {'id': '%101', 'window': 'ptw-attr-doc-tooltips', 'command': 'bash', 'claude': False,
+              'path': '/home/memnar/ver/platform.ptw-attr-doc-tooltips',
+              'wt': {'branch': 'ptw-attr-doc-tooltips', 'dirty': False, 'ahead': 0}}
+    claude = dict(numbered, id='%99', window='avo-396-outline-draft-saving', command='claude', claude=True)
+    node = dict(numbered, id='%80', command='node', claude=False)
+    dirty = dict(legacy, id='%102', window='ptw-368-ptw-attr-doc-tooltips',
+                 wt={'branch': 'ptw-attr-doc-tooltips', 'dirty': True, 'ahead': 0})
+    open_legacy = {'id': '%76', 'window': 'outline-join-lines', 'command': 'bash', 'claude': False,
+                   'path': '/home/memnar/ver/platform.outline-join-lines',
+                   'wt': {'branch': 'outline-join-lines', 'dirty': False, 'ahead': 0}}
+    prs = {**merged, 368: {'number': 368, 'state': 'MERGED', 'branch': 'ptw-attr-doc-tooltips'}, **open_pr}
+    got = [(p['id'], pr['number']) for p, pr in tick.windows_to_close(
+        [numbered, legacy, claude, node, dirty, open_legacy], prs)]
+    assert got == [('%107', 396), ('%101', 368)]
+
+
+def test_closable_closes_merged_shells_and_notes_finished_claude(monkeypatch):
+    calls = []
+
+    def fake_sh(argv, check=False, timeout=300):
+        calls.append(list(argv))
+        class R:
+            returncode = 0
+            stderr = stdout = ''
+        return R()
+
+    monkeypatch.setattr(tick, 'sh', fake_sh)
+    merged = {'number': 396, 'state': 'MERGED', 'draft': False, 'branch': 'avo/outline-draft-saving',
+              'head': HEAD, 'title': 't', 'col': 'Done', 'item': 'item', 'rank': 1, 'parked': False}
+    shell = {'id': '%107', 'window': 'avo-396-outline-draft-saving', 'command': 'bash', 'claude': False,
+             'cls': 'shell', 'pr': 396, 'parked': False, 'path': '/home/memnar/ver/platform.avo-outline-draft-saving (deleted)',
+             'wt': None, 'screen': ''}
+    finished = pane('finished')
+    finished['pr'] = 396
+    t = make_tick({396: merged, 7: dict(PR, col='Human Review', draft=False)}, [shell, finished], pr())
+    t.dry = False
+    t.closable()
+    assert calls == [['tmux', 'kill-window', '-t', '%107']]
+    assert t.did == ['did: closed window avo-396-outline-draft-saving (%107) for merged PR #396']
+    assert any('Claude can be closed' in n[1] for n in t.notes)
+
+
+def test_closable_dry_run_does_not_kill():
+    merged = {'number': 396, 'state': 'MERGED', 'draft': False, 'branch': 'avo/outline-draft-saving',
+              'head': HEAD, 'title': 't', 'col': 'Done', 'item': 'item', 'rank': 1, 'parked': False}
+    shell = {'id': '%107', 'window': 'avo-396-outline-draft-saving', 'command': 'bash', 'claude': False,
+             'cls': 'shell', 'pr': 396, 'parked': False,
+             'path': '/home/memnar/ver/platform.avo-outline-draft-saving (deleted)', 'wt': None, 'screen': ''}
+    t = make_tick({396: merged}, [shell], pr())
+    t.closable()
+    assert t.did == ['would: close window avo-396-outline-draft-saving (%107) for merged PR #396']
+    assert t.notes == []
+
+
 def test_milestone_rank():
     assert tick.milestone_rank(['PTW 15 ', None]) == 0
     assert tick.milestone_rank([None, 'ptw 16']) == 1
