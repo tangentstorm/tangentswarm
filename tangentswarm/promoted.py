@@ -33,7 +33,7 @@ POLL = int(os.environ.get('SWARM_PROMOTE_POLL', '30'))
 RETRY = int(os.environ.get('SWARM_PROMOTE_RETRY', '5'))
 PULL = os.environ.get('SWARM_PROMOTE_PULL') == '1'  # also run the Staging pull
 REPO = 'tangentcode/platform'
-HR_TARGET = 2
+HR_TARGET = int(os.environ.get('SWARM_PROMOTE_HR_TARGET', '2'))  # only raise it for a dry-run proof
 
 LEAN_Q = """query($c:String){organization(login:"tangentcode"){projectV2(number:4){items(first:100, after:$c){
  pageInfo{hasNextPage endCursor}
