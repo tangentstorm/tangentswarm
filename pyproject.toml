@@ -29,6 +29,7 @@ swarm-brief = "tangentswarm.brief:main"
 swarm-hookgate = "tangentswarm.hookgate:main"
 swarm-launch = "tangentswarm.launches:main"
 swarm-lock = "tangentswarm.gatelock:main"
+swarm-flow = "tangentswarm.flow:main"
 
 [tool.setuptools]
 packages = ["tangentswarm", "tangentswarm.cloud", "tangentswarm.queue"]

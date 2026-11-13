@@ -9,6 +9,7 @@ A, B, C, D = 'a' * 40, 'b' * 40, 'c' * 40, 'd' * 40
 @pytest.fixture(autouse=True)
 def cache(tmp_path, monkeypatch):
     monkeypatch.setattr(hg, 'CACHE', tmp_path)
+    monkeypatch.setattr(hg, 'pulled', lambda: None)
     return tmp_path
 
 
@@ -133,3 +134,11 @@ def test_main_ci_last_check_records_and_debounces(monkeypatch, capsys):
     assert calls == [A]
     out = capsys.readouterr().out
     assert 'CI complete' in out and 'already seen complete' in out and 'draft' in out
+
+
+def test_ready_pr_is_skipped_unless_it_is_being_pulled(monkeypatch):
+    b = Board({'5': pr(A, col='Ready')})
+    monkeypatch.setattr(hg, 'pulled', lambda: None)
+    assert 'Ready' in stop(A, 1000, b)
+    monkeypatch.setattr(hg, 'pulled', lambda: 5)
+    assert hg.check(A, now=1001, fetch=b) == 5

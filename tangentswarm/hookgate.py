@@ -6,7 +6,8 @@ the REST check, hr-gate and flow-status. This gate runs before any REST call:
 
   1. Map SHA to a PR with a cached board snapshot (one GraphQL query, refreshed only
      when older than SNAPSHOT_TTL or when the SHA is not a known head).
-  2. Skip a closed PR, a draft PR, and a card outside GATE_COLS (In Progress included).
+  2. Skip a closed PR, a draft PR, and a card outside GATE_COLS (In Progress and Ready
+     included), except the one PR that swarm-flow is pulling into Staging.
   3. Debounce per PR head: a head whose CI was already seen complete is skipped for
      DONE_DEBOUNCE seconds; repeated events while CI still runs are collapsed to one
      REST check per BUSY_DEBOUNCE seconds.
@@ -40,6 +41,12 @@ DONE_DEBOUNCE = int(os.environ.get('SWARM_HOOK_DONE_DEBOUNCE', '1800'))
 BUSY_DEBOUNCE = int(os.environ.get('SWARM_HOOK_BUSY_DEBOUNCE', '60'))
 RESERVE = int(os.environ.get('SWARM_HOOK_RESERVE', '300'))
 MAX_WAIT = int(os.environ.get('SWARM_HOOK_MAX_WAIT', '3900'))
+
+
+def pulled():
+    """The PR that swarm-flow is pulling into Staging (it sits in Ready until it passes)."""
+    from . import flow
+    return flow.pulled_pr()
 
 
 class Stop(Exception):
@@ -123,7 +130,7 @@ def check(sha, now=None, fetch=fetch_board):
         raise Stop(f"#{n} is {p['state'].lower()}")
     if p['draft']:
         raise Stop(f"#{n} is a draft")
-    if p['col'] not in GATE_COLS:
+    if p['col'] not in GATE_COLS and n != pulled():
         raise Stop(f"#{n} is in {p['col'] or 'no column'}, not {' or '.join(GATE_COLS)}")
     with locked_json(CACHE / 'state.json') as st:
         seen = st.setdefault('heads', {})

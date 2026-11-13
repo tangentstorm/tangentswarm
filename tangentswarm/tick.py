@@ -20,15 +20,15 @@ bot holding it together by hand. Each pass:
   2. For an In Progress PR whose Claude is finished, with no open Codex findings and a
      head that merges cleanly onto origin/main: marks the PR ready, moves the card to
      Auto Review and posts "@codex review" (once per head).
-  3. For each ready PR in In Progress or Auto Review that Codex passed on its head:
-     runs `hr-gate --apply N` when hr-gate conditions 1-8 pass. Order: the priority
-     milestone ("ptw 15") first, then the oldest entry into its column.
+  3. (Retired by methodology#56: Ready PRs get no gate. Only the flow step's one pulled
+     PR is gated.)
   3b. Starts at most one held launch (swarm-launch queue) when the worker slice has
      room, priority milestone first, then the oldest hold. Memory limits are read live.
      Memory pressure that lasts PRESSURE_MINUTES or more is reported, with the numbers
      and the held launches.
   4. Runs `active-gate --sweep --demote` and `active-gate --promote-missing`.
-  5. Runs `pending-promote --apply`.
+  5. Runs one swarm-flow step (tangentswarm.flow): promote Staging -> Human Review when
+     Human Review has fewer than 2, and pull one Ready PR into Staging.
   6. Closes every tmux window in session `agents` that belongs to a MERGED or CLOSED
      PR (the numbered name, a legacy name without the number, or a pane in that
      branch's worktree), except a window whose foreground command is claude or node,
@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import board, brief, gatelock, launches
+from . import board, brief, flow, gatelock, launches
 
 ET = ZoneInfo('America/New_York')
 HOME = Path.home()
@@ -821,7 +821,28 @@ class Tick:
             if rc == 2:
                 self.note(None, None, f"{argv[0].name} error: {out.strip().splitlines()[-1][:150] if out.strip() else rc}")
 
-    # step 5 ---------------------------------------------------------------
+    # step 5: the just-in-time flow (methodology#56) --------------------------
+    def flow_pass(self):
+        """Promote into Human Review and pull one Ready PR into Staging (swarm-flow step)."""
+        f = flow.Flow(dry_run=self.dry, out=lambda line: None, g=self.g)
+        try:
+            if self.dry:
+                f.step()
+            else:
+                with gatelock.gate_lock('swarm-tick flow step'):
+                    f.step()
+        except gatelock.Busy as e:
+            self.note(None, None, f"flow step skipped, gate lock busy: {e}; next pass retries")
+            return
+        except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+            self.note(None, None, f"flow step error: {e}")
+            return
+        for line in f.did:
+            self.did.append(line)
+        for line in f.notes:
+            self.note(None, None, 'flow: ' + line)
+
+    # retired by methodology#56: kept for reference, no longer called ------------
     def pending_pass(self):
         argv = [BIN / 'pending-promote', '--dry-run' if self.dry else '--apply']
         rc, out = self.tool(argv)
@@ -870,10 +891,9 @@ class Tick:
         self.brief_pass()
         with self.g['ScratchRepo']() as scratch:
             self.panes_pass(scratch)
-            self.hr_pass(scratch)
         self.launch_pass()
         self.active_pass()
-        self.pending_pass()
+        self.flow_pass()
         self.closable()
         if not self.dry:
             self.state.save()

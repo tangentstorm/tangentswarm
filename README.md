@@ -785,9 +785,8 @@ idle-dirty, asking, input, menu, exited). It then does the safe mechanical moves
 - A draft In Progress PR whose Claude is finished (idle, clean worktree, local HEAD is
   the pushed PR head, no open Codex findings, head merges cleanly onto origin/main) is
   marked ready and moved to Auto Review, with one `@codex review` per head.
-- A ready, Codex-clean PR goes through `hr-gate --apply` when hr-gate conditions 1-8 pass.
-- `active-gate --sweep --demote`, `active-gate --promote-missing` and
-  `pending-promote --apply` run as they are.
+- `active-gate --sweep --demote` and `active-gate --promote-missing` run as they are.
+- One `swarm-flow step` runs (see below). Ready PRs are never gated by the tick.
 
 Candidates in the priority milestone (`ptw 15`; override with
 `SWARM_PRIORITY_MILESTONES`) go first, then FIFO.
@@ -835,6 +834,33 @@ swarm-launch --drop BRANCH
 Memory is read live each time: the slice's MemoryCurrent, MemoryHigh and MemoryMax,
 and the host's MemAvailable. A launch needs 700 MB under MemoryHigh and more than
 1.5 GB available, the same rule as `swarm-start-scoped`.
+
+### swarm-flow: the just-in-time Human Review flow
+
+`swarm-flow` enforces methodology#56. Columns are matched by option id
+(`tangentswarm.board`): Ready (finished, never merged, gated or checked), Staging (3 to 5
+fully prepared PRs) and Human Review (exactly 2).
+
+```sh
+swarm-flow step [--dry-run]   # one step under the serial lock (exit 75 = busy)
+swarm-flow event NAME < JSON  # from the GitHub hook: steps only on a Status change or a merge
+swarm-flow status             # Human Review, Staging, Ready, and the running pull
+```
+
+One step:
+
+1. **Promote.** Human Review has fewer than 2: `pending-promote --apply` (never `--fill`).
+2. **Pull.** Staging has fewer than 3 and no pull runs: take the top Ready PR (priority
+   milestone, fewest conflicts, oldest) that stacks cleanly on main + Human Review +
+   Staging (local merge-tree only). A PR that does not merge onto main goes back to In
+   Progress with a merge-main relay. Merge the head into `work` as one merge commit and
+   push it; the push redeploys staging.
+3. **Advance the pull.** Evaluate hr-gate on the pulled head. All pass: `hr-gate --apply`
+   puts it into Staging. CI running or screenshots missing: wait (90 minutes at most). A
+   hard failure or a moved head: back to In Progress with the reason.
+
+Only the pulled PR is merged, deployed or gated. swarm-tick runs one step per pass; the
+GitHub hook runs `swarm-flow event` on `projects_v2_item` and merge events.
 
 ### swarm-lock: one gate operation at a time
 
