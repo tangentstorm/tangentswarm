@@ -862,6 +862,25 @@ One step:
 Only the pulled PR is merged, deployed or gated. swarm-tick runs one step per pass; the
 GitHub hook runs `swarm-flow event` on `projects_v2_item` and merge events.
 
+### swarm-promoted: refill Human Review in seconds
+
+A systemd user service with no LLM in the path. Every 30 seconds (or at once on
+`SIGUSR1`, for example from a webhook receiver after a merge) it reads the Status of
+every open PR in one lean GraphQL query, through the minbot shim. When Human Review holds
+fewer than 2 and Staging is not empty, it takes the serial lock (retrying every 5
+seconds while busy) and:
+
+1. **Fast path:** if the Staging head was gated at its current head commit (an hr-gate
+   PASS or PENDING line with no failure) and is not stacked, it moves that card to Human
+   Review first and writes the hr-gate PASS line.
+2. **Slow path:** `pending-promote --apply` if Human Review is still short.
+   `SWARM_PROMOTE_PULL=1` runs a full `swarm-flow step` instead (it also pulls).
+
+```sh
+swarm-promoted --once --dry-run      # one check; print what it would move
+systemctl --user kill -s USR1 swarm-promoted   # wake it now
+```
+
 ### swarm-lock: one gate operation at a time
 
 Only one merge or gate operation may run at a time: `hr-gate --apply`, `hr-gate
