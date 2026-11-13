@@ -104,3 +104,9 @@ def test_default_lock_is_the_shared_serial_lock():
     import importlib, os
     if 'SWARM_GATE_LOCK' not in os.environ:
         assert importlib.reload(gl).LOCK.name == 'swarm-serial.lock'
+
+
+def test_release_removes_our_holder_note(lock):
+    with gl.gate_lock('swarm-promoted', env={}):
+        assert 'swarm-promoted' in gl.holder()
+    assert not gl.holder_path().exists() and gl.holder() == 'unknown holder'

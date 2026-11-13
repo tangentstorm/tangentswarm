@@ -3,7 +3,7 @@
 Columns (matched by option id, see tangentswarm.board):
   Ready         finished PRs (Claude done, Codex clean on head, exact-head MinBot pass).
                 They get no merge, no gate and no GitHub check. They wait in order:
-                priority milestone, then fewest conflicts, then oldest.
+                fast-track (methodology#60), priority milestone, fewest conflicts, oldest.
   Staging       3 to 5 fully prepared PRs (internal key "Pending"): merged into work,
                 served on staging, CI green, body complete, every gate condition passes.
   Human Review  exactly 2.
@@ -231,7 +231,10 @@ class Flow:
                 self.fail(p, 'does not merge cleanly onto main: merge origin/main into the branch (no rebase)',
                           relay='merge-main')
                 continue
-            bad = stack_conflict(scratch, main, bases, p['head'])
+            # A fast-track PR takes the FIRST Staging slot (methodology#60): it stacks on main +
+            # Human Review only; the Staging PRs behind it are re-stacked at their own promotion.
+            mine = bases[:len(hr)] if p['rank'] == board.FAST_TRACK else bases
+            bad = stack_conflict(scratch, main, mine, p['head'])
             if bad:
                 self.note(f"#{n} skipped this step: conflicts with {bad} (Ready order kept)")
                 continue

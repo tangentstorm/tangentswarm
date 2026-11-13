@@ -246,3 +246,16 @@ def test_main_busy_exits_75(monkeypatch):
             return False
     monkeypatch.setattr(flow.gatelock, 'gate_lock', lambda name: B())
     assert flow.main(['step']) == flow.gatelock.EXIT_BUSY
+
+
+def test_fast_track_takes_the_first_staging_slot_and_jumps_ready(monkeypatch):
+    prs = {1: card(1, HR), 2: card(2, HR), 3: card(3, ST), 4: card(4, ST),
+           7: card(7, RD, rank=0), 8: card(8, RD, rank=board.FAST_TRACK)}
+    f, g = make_flow(prs)
+    seen = {}
+    monkeypatch.setattr(flow, 'stack_conflict', lambda s, m, bases, head: seen.setdefault(head, bases) and None)
+    started = []
+    monkeypatch.setattr(f, 'start_pull', lambda p, s: started.append(p['number']))
+    f.step()
+    assert started == [8]
+    assert [n for n, _ in seen[prs[8]['head']]] == ['#1', '#2']  # Human Review only, not Staging

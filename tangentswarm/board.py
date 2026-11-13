@@ -3,6 +3,8 @@
 The board renames columns (Pending is now shown as Staging). Option ids stay the same,
 so every reader maps a status value's optionId to the stable internal key below.
 """
+import re
+
 PROJECT_ID = 'PVT_kwDOCSzmXs4BmmNr'
 STATUS_FIELD = 'PVTSSF_lADOCSzmXs4BmmNrzhlOj8c'
 
@@ -32,3 +34,19 @@ def column(value):
 def event_names(*keys):
     """Every name a timeline event may use for these columns."""
     return set(keys).union(*(ALIASES.get(k, set()) for k in keys))
+
+
+# Ordering (methodology#60): keep the flow full first; within that, a fast-track PR jumps
+# the queue at every step. A PR is fast-track when it, or an issue it closes, has one of
+# these labels.
+FAST_TRACK_RE = re.compile(r'^\s*(fast[- _]?track|high[- _]?priority|priority[: /_-]*high)\s*$', re.I)
+FAST_TRACK, MILESTONE, NORMAL = -1, 0, 1
+
+
+def is_fast_track(labels):
+    return any(FAST_TRACK_RE.match(l or '') for l in labels)
+
+
+def priority_rank(fast_track, priority_milestone):
+    """-1 fast-track, 0 priority milestone, 1 the rest. Lower goes first."""
+    return FAST_TRACK if fast_track else (MILESTONE if priority_milestone else NORMAL)

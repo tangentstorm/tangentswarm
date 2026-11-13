@@ -66,10 +66,16 @@ def gate_lock(name, lock=None, env=os.environ):
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise Busy(holder(lock)) from None
-        holder_path(lock).write_text(f"{name} pid {os.getpid()} since {datetime.now().isoformat(timespec='seconds')}\n")
+        mine = f"{name} pid {os.getpid()} since {datetime.now().isoformat(timespec='seconds')}\n"
+        holder_path(lock).write_text(mine)
         try:
             yield
         finally:
+            try:  # a stale note would name us as the holder of someone else's lock
+                if holder_path(lock).read_text() == mine:
+                    holder_path(lock).unlink()
+            except OSError:
+                pass
             fcntl.flock(f, fcntl.LOCK_UN)
 
 

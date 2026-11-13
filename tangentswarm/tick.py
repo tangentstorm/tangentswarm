@@ -388,7 +388,7 @@ BOARD_Q = """query($c:String){organization(login:"tangentcode"){projectV2(number
   content{__typename
    ...on PullRequest{number state isDraft headRefName headRefOid title repository{nameWithOwner}
      body milestone{title} labels(first:20){nodes{name}}
-     closingIssuesReferences(first:10){nodes{milestone{title}}}}}}}}}}"""
+     closingIssuesReferences(first:10){nodes{milestone{title} labels(first:20){nodes{name}}}}}}}}}}}"""
 
 
 def board_prs(g):
@@ -403,10 +403,14 @@ def board_prs(g):
             miles = [(c.get('milestone') or {}).get('title')]
             miles += [(i.get('milestone') or {}).get('title') for i in c['closingIssuesReferences']['nodes']]
             labels = {l['name'] for l in c['labels']['nodes']}
+            issue_labels = {l['name'] for i in c['closingIssuesReferences']['nodes']
+                            for l in ((i.get('labels') or {}).get('nodes') or [])}
             out[c['number']] = dict(number=c['number'], state=c['state'], draft=c['isDraft'],
                                     branch=c['headRefName'], head=c['headRefOid'], title=c['title'],
                                     body=c.get('body') or '',
-                                    col=col, item=it['id'], rank=milestone_rank(miles),
+                                    col=col, item=it['id'],
+                                    rank=board.priority_rank(board.is_fast_track(labels | issue_labels),
+                                                             milestone_rank(miles) == 0),
                                     parked=c['number'] in g['PARKED'] | EXTRA_PARKED or 'parked' in labels)
         if not data['pageInfo']['hasNextPage']:
             return out

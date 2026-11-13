@@ -862,6 +862,16 @@ One step:
 Only the pulled PR is merged, deployed or gated. swarm-tick runs one step per pass; the
 GitHub hook runs `swarm-flow event` on `projects_v2_item` and merge events.
 
+### Fast-track (methodology#60)
+
+First keep the flow full (Human Review 2, Staging 3-5, more Ready). Within that, a PR
+labeled `fast-track` or `high priority` (on the PR or on an issue it closes) jumps the
+queue at every step: held launches and pane order in swarm-tick, the Ready head, the
+FIRST Staging slot (it stacks on main + Human Review only; the Staging PRs behind it are
+re-stacked at their own promotion), and the next free Human Review slot. The serial lock
+and every gate still apply. `tangentswarm.board.priority_rank()` is the rule; the live
+hr-gate's queue order uses the same one.
+
 ### swarm-promoted: refill Human Review in seconds
 
 A systemd user service with no LLM in the path. Every 30 seconds (or at once on
