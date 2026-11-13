@@ -8,11 +8,12 @@ them takes this lock with a non-blocking flock; a caller that finds it held prin
 event or pass tries again.
 
 Contract (hr-gate and pending-promote implement the same one inline):
-  lock file    $SWARM_GATE_LOCK (default ~/.cache/hr-gate.lock), opened for append,
-               never truncated; flock(LOCK_EX | LOCK_NB)
+  lock file    $SWARM_GATE_LOCK (default ~/.cache/swarm-serial.lock);
+               flock(LOCK_EX | LOCK_NB)
   holder note  <lock file>.holder: one line naming the holder, written after the lock
                is taken (only for the "busy" message; the flock is the truth)
-  child runs   HR_GATE_LOCK_HELD=1 in the environment: a parent already holds the lock
+  child runs   SWARM_SERIAL_HELD=1 (or the older HR_GATE_LOCK_HELD=1) in the
+               environment: this process or a parent already holds the lock
 
     swarm-lock -n work-merge -- git -C WORKTREE push origin HEAD:work
     swarm-lock --status
@@ -26,9 +27,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-LOCK = Path(os.environ.get('SWARM_GATE_LOCK', str(Path.home() / '.cache' / 'hr-gate.lock')))
+LOCK = Path(os.environ.get('SWARM_GATE_LOCK', str(Path.home() / '.cache' / 'swarm-serial.lock')))
 EXIT_BUSY = 75
-HELD_ENV = 'HR_GATE_LOCK_HELD'
+HELD_ENV = 'SWARM_SERIAL_HELD'
+OLD_HELD_ENV = 'HR_GATE_LOCK_HELD'
+
+
+def already_held(env):
+    return env.get(HELD_ENV) == '1' or bool(env.get(OLD_HELD_ENV))
 
 
 class Busy(Exception):
@@ -51,7 +57,7 @@ def holder(lock=None):
 def gate_lock(name, lock=None, env=os.environ):
     """Hold the global gate lock for the block, or raise Busy at once. Re-entrant via HELD_ENV."""
     lock = lock or LOCK
-    if env.get(HELD_ENV):
+    if already_held(env):
         yield
         return
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -95,7 +101,7 @@ def main(argv=None):
         ap.error('give a command after --')
     try:
         with gate_lock(f"{a.name} ({' '.join(cmd)[:80]})"):
-            env = dict(os.environ, **{HELD_ENV: '1'})
+            env = dict(os.environ, **{HELD_ENV: '1', OLD_HELD_ENV: '1'})
             return subprocess.run(cmd, env=env).returncode
     except Busy as e:
         print(f"busy: {e}")

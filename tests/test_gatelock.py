@@ -13,6 +13,7 @@ def lock(tmp_path, monkeypatch):
     p = tmp_path / 'gate.lock'
     monkeypatch.setattr(gl, 'LOCK', p)
     monkeypatch.delenv(gl.HELD_ENV, raising=False)
+    monkeypatch.delenv(gl.OLD_HELD_ENV, raising=False)
     return p
 
 
@@ -91,3 +92,15 @@ def test_tick_pending_busy_is_a_note_not_an_error():
     assert t.did == [] and len(t.notes) == 1
     assert 'pending-promote skipped, gate lock busy: hr-gate --apply 469' in t.notes[0][1]
     assert 'error' not in t.notes[0][1]
+
+
+def test_old_held_env_is_honored_too(lock):
+    with gl.gate_lock('parent', env={}):
+        with gl.gate_lock('child', env={gl.OLD_HELD_ENV: '1'}):
+            pass
+
+
+def test_default_lock_is_the_shared_serial_lock():
+    import importlib, os
+    if 'SWARM_GATE_LOCK' not in os.environ:
+        assert importlib.reload(gl).LOCK.name == 'swarm-serial.lock'

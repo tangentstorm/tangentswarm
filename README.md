@@ -849,9 +849,9 @@ swarm-lock -n work-merge -- git push origin HEAD:work   # run a command under th
 swarm-lock --status                                      # free, or busy and the holder
 ```
 
-The lock file is `$SWARM_GATE_LOCK` (default `~/.cache/hr-gate.lock`); the holder note
-is next to it. `HR_GATE_LOCK_HELD=1` marks a child of a run that already holds the
-lock. `hr-gate --apply` also skips draft PRs before it takes the lock.
+The lock file is `$SWARM_GATE_LOCK` (default `~/.cache/swarm-serial.lock`); the holder
+note is next to it. `SWARM_SERIAL_HELD=1` (or the older `HR_GATE_LOCK_HELD=1`) marks a
+run whose parent already holds the lock. `hr-gate --apply` also skips draft PRs before it takes the lock.
 
 ### swarm-hookgate: the CI-completion hook's front gate
 
