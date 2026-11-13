@@ -27,6 +27,7 @@ swarm-agent = "tangentswarm.agent_mcp_server:main"
 swarm-tick = "tangentswarm.tick:main"
 swarm-brief = "tangentswarm.brief:main"
 swarm-hookgate = "tangentswarm.hookgate:main"
+swarm-launch = "tangentswarm.launches:main"
 
 [tool.setuptools]
 packages = ["tangentswarm", "tangentswarm.cloud", "tangentswarm.queue"]

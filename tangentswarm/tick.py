@@ -23,6 +23,10 @@ bot holding it together by hand. Each pass:
   3. For each ready PR in In Progress or Auto Review that Codex passed on its head:
      runs `hr-gate --apply N` when hr-gate conditions 1-8 pass. Order: the priority
      milestone ("ptw 15") first, then the oldest entry into its column.
+  3b. Starts at most one held launch (swarm-launch queue) when the worker slice has
+     room, priority milestone first, then the oldest hold. Memory limits are read live.
+     Memory pressure that lasts PRESSURE_MINUTES or more is reported, with the numbers
+     and the held launches.
   4. Runs `active-gate --sweep --demote` and `active-gate --promote-missing`.
   5. Runs `pending-promote --apply`.
   6. Closes every tmux window in session `agents` that belongs to a MERGED or CLOSED
@@ -60,7 +64,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import brief
+from . import brief, launches
 
 ET = ZoneInfo('America/New_York')
 HOME = Path.home()
@@ -80,6 +84,7 @@ LATER_COLS = ('Pending', 'Human Review', 'Done', 'Canceled')
 EXTRA_PARKED = {202, 344, 350}
 SHELLS = {'bash', 'sh', 'zsh', 'fish', 'dash'}
 STUCK_MINUTES = 20
+PRESSURE_MINUTES = int(os.environ.get('SWARM_PRESSURE_MINUTES', '10'))
 SETTLE = 1.5
 
 # ---------------------------------------------------------------------------
@@ -90,6 +95,7 @@ MENU_RE = re.compile(r'^\s*[❯>]\s*1\.\s|Enter to confirm|Esc to cancel|'
                      r'^\s*Do you want to (?:proceed|make this edit|create|run|allow)', re.M | re.I)
 WINDOW_PR_RE = re.compile(r'^[a-z/]+-(\d+)-')
 DIGITS_RE = re.compile(r'\d+')
+SCAFFOLD_RE = re.compile(r'^Start #\d+\s*$')
 
 
 def _bars(lines):
@@ -632,9 +638,27 @@ class Tick:
             self.note(n, s, 'Claude exited mid-work: worktree has uncommitted or unpushed changes')
         elif wt['head'] != pr['head']:
             self.note(n, s, f"Claude exited; local HEAD {(wt['head'] or '?')[:8]} is not PR head {pr['head'][:8]}")
+        elif not s['parked'] and self.never_started(n, pr, s):
+            return
         else:
             how = 'parked by swarm-park' if s['parked'] else 'exited'
             self.note(n, s, f"Claude {how}, worktree clean and pushed, PR still {'draft ' if pr['draft'] else ''}In Progress: resume with the open work, or mark ready")
+
+    def never_started(self, n, pr, s):
+        """A held launch left behind: an idle shell whose head is still the scaffold commit.
+
+        swarm-start-scoped leaves the shell window when memory holds the launch. If the
+        head is still the "Start #N" commit and a brief file exists, queue the launch."""
+        subject = git(s['wt'].get('top') or s.get('path'), 'log', '-1', '--format=%s') or ''
+        path = brief.brief_path(n)
+        if not SCAFFOLD_RE.match(subject) or brief.read_brief(n) is None:
+            return False
+        queued = any(r['branch'] == pr['branch'] for r in launches.read_queue())
+        if not queued:
+            if not self.dry:
+                launches.hold(pr['branch'], s['window'], n, str(path))
+            self.change(f"#{n} queued held launch {pr['branch']} (shell {s['id']}, head is the scaffold commit)")
+        return True
 
     def finished(self, n, pr, c, scratch):
         if c['wt']['head'] != pr['head']:
@@ -723,6 +747,48 @@ class Tick:
                 self.note(n, pane, f"needs a speculative vN branch: relay /tmp/relay-{n}-spec.md to its Claude")
             hr_peers = self.g['list_hr_prs'](refresh=True)
 
+    # step 3b: held launches and memory pressure ---------------------------
+    def launch_pass(self, now=None):
+        now = time.time() if now is None else now
+        try:
+            m = launches.memory()
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            self.note(None, None, f"cannot read worker memory: {e}")
+            return
+        by_branch = {p['branch']: n for n, p in self.prs.items() if p['state'] == 'OPEN'}
+        rows = launches.read_queue()
+        for r in rows:
+            r['pr'] = r.get('pr') or by_branch.get(r['branch'])
+        rank = lambda pr: self.prs.get(pr, {}).get('rank', 1)  # noqa: E731
+        rows = launches.ordered(rows, rank)
+        ok = launches.admits(m)
+        since = self.state.data.get('pressure_since')
+        if ok:
+            self.state.data.pop('pressure_since', None)
+        else:
+            since = since or now
+            self.state.data['pressure_since'] = since
+            mins = int((now - since) // 60)
+            if mins >= PRESSURE_MINUTES:
+                held = ', '.join(f"#{r['pr']}" if r['pr'] else r['branch'] for r in rows) or 'none'
+                self.note(None, None, f"memory pressure for {mins} min: {launches.describe(m)}; "
+                                      f"held launches: {held}")
+        if not rows or not ok:
+            return
+        first = rows[0]
+        name = f"#{first['pr']}" if first['pr'] else first['branch']
+        if self.dry:
+            self.change(f"{name} start held launch {first['branch']} ({launches.describe(m)})")
+            return
+        what, row, out = launches.start_next(rank=rank, mem=lambda: m)
+        if what == 'launched':
+            self.change(f"{name} started held launch in {out.get('window')} ({out.get('pane')})")
+            if out.get('brief_error'):
+                self.note(first['pr'], None, f"started, but the brief line was not sent: {out['brief_error']}")
+        elif what == 'refused':
+            self.note(first['pr'], None, f"held launch {first['branch']} refused and dropped from the queue: "
+                                         f"{out.get('refused', out)}")
+
     # step 4 ---------------------------------------------------------------
     def active_pass(self):
         if self.dry:
@@ -799,6 +865,7 @@ class Tick:
         with self.g['ScratchRepo']() as scratch:
             self.panes_pass(scratch)
             self.hr_pass(scratch)
+        self.launch_pass()
         self.active_pass()
         self.pending_pass()
         self.closable()

@@ -777,6 +777,11 @@ idle-dirty, asking, input, menu, exited). It then does the safe mechanical moves
 - An open In Progress or Auto Review PR whose body has no brief section gets the
   coordinator's brief file (`$SWARM_BRIEF_DIR/<PR>.txt`) added at the end of its body.
   A PR with no brief file is reported for judgment.
+- A held launch is started when the worker slice has room: one per pass, priority
+  milestone first, then the oldest hold (see `swarm-launch` below). An idle shell whose
+  head is still the `Start #N` scaffold commit, with a brief file, is a held launch that
+  was left behind; the pass queues it. Memory pressure that lasts 10 minutes or more is
+  reported with the live slice numbers and the held launches.
 - A draft In Progress PR whose Claude is finished (idle, clean worktree, local HEAD is
   the pushed PR head, no open Codex findings, head merges cleanly onto origin/main) is
   marked ready and moved to Auto Review, with one `@codex review` per head.
@@ -812,6 +817,24 @@ The section starts with `<!-- swarm-brief:start -->` and ends with
 `<!-- swarm-brief:end -->`. A gate check that reads the body (screenshots, the
 where-to-see line, the served commit, code-only) must skip this section, because a
 brief names those things before they exist. `tangentswarm.brief.strip_brief()` does that.
+
+### swarm-launch: held launches
+
+`swarm-start-scoped` exits 3 when the worker slice is short of memory and leaves an
+idle shell. `swarm-launch` runs it and puts a held launch in a queue
+(`$SWARM_HELD`); swarm-tick starts queued launches as memory frees and sends each new
+Claude one line that points to its brief file.
+
+```sh
+swarm-launch BRANCH [WINDOW] --pr N --brief FILE   # start now, or queue on a hold
+swarm-launch --list                                # live memory and the queue
+swarm-launch --next                                # start the first queued launch if memory admits it
+swarm-launch --drop BRANCH
+```
+
+Memory is read live each time: the slice's MemoryCurrent, MemoryHigh and MemoryMax,
+and the host's MemAvailable. A launch needs 700 MB under MemoryHigh and more than
+1.5 GB available, the same rule as `swarm-start-scoped`.
 
 ### swarm-hookgate: the CI-completion hook's front gate
 
