@@ -813,6 +813,27 @@ The section starts with `<!-- swarm-brief:start -->` and ends with
 where-to-see line, the served commit, code-only) must skip this section, because a
 brief names those things before they exist. `tangentswarm.brief.strip_brief()` does that.
 
+### swarm-hookgate: the CI-completion hook's front gate
+
+A CI-completion hook runs `ci-last-check SHA` first and stops when it exits 1. A storm
+of CI events on new draft PRs once used up the whole REST quota. `swarm-hookgate`
+decides before any REST call:
+
+```sh
+swarm-hookgate ci-last-check SHA   # gate, then the REST check; 0 = go on, 1 = stop, 2 = error
+swarm-hookgate check SHA           # gate only (no REST call)
+swarm-hookgate wait                # return once the REST quota has a reserve; sleep through the reset
+```
+
+- It maps the SHA to a PR with a cached board snapshot (GraphQL only; refreshed when it
+  is older than 2 minutes or the SHA is not a known head).
+- It skips closed and draft PRs, and every card outside Auto Review and Pending.
+- It debounces per head: a head with complete CI is skipped for 30 minutes, and repeated
+  events while CI runs reach the REST check at most once a minute.
+- Below 300 REST calls left it waits for the reset time instead of failing mid-run.
+
+The `SWARM_HOOK_*` variables override these limits. The state is in `~/.cache/swarm-hook`.
+
 ## License
 
 MIT
