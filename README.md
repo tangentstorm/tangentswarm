@@ -759,6 +759,40 @@ The same modes as swarm-mcp, with credentials that are separate in both directio
   `tangentswarm:agent`. Use this only when it has an origin to itself, because the
   authorization server routes live at the origin root.
 
+## swarm-tick: one pass of the platform PR loop
+
+`swarm-tick` moves the tangentcode/platform swarm forward with no LLM in the loop. A
+routine runs it every 15 minutes. The goal is that every Project 4 card is in Human
+Review or Needs Input when Michal sits down.
+
+```sh
+swarm-tick --dry-run     # change nothing; print "would: ..." lines and judgment items
+swarm-tick               # do the mechanical moves; print "did: ..." lines and judgment items
+swarm-tick --verbose     # also print every pane's class and each tool's output
+```
+
+Each pass classifies every pane in the tmux session `agents` (working, finished,
+idle-dirty, asking, input, menu, exited). It then does the safe mechanical moves:
+
+- A draft In Progress PR whose Claude is finished (idle, clean worktree, local HEAD is
+  the pushed PR head, no open Codex findings, head merges cleanly onto origin/main) is
+  marked ready and moved to Auto Review, with one `@codex review` per head.
+- A ready, Codex-clean PR goes through `hr-gate --apply` when hr-gate conditions 1-8 pass.
+- `active-gate --sweep --demote`, `active-gate --promote-missing` and
+  `pending-promote --apply` run as they are.
+
+Candidates in the priority milestone (`ptw 15`; override with
+`SWARM_PRIORITY_MILESTONES`) go first, then FIFO.
+
+Everything else is printed as one line per item that needs judgment, in the form
+`#PR %pane window: reason`. Examples are Codex findings to relay, a menu, idle work
+that is not pushed, a missing MinBot pass, a staging redeploy and a Claude that exited
+mid-work. A pass with nothing to do prints nothing.
+
+swarm-tick never merges, deploys, types into a pane, or kills or closes anything. It
+reuses the tools in `~/bin` (hr-gate, active-gate, pending-promote) and mn-workflow's
+state file; it does not replace them. Its log is `~/.local/state/swarm-tick/tick.log`.
+
 ## License
 
 MIT
