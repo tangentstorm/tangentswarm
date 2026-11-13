@@ -836,6 +836,23 @@ Memory is read live each time: the slice's MemoryCurrent, MemoryHigh and MemoryM
 and the host's MemAvailable. A launch needs 700 MB under MemoryHigh and more than
 1.5 GB available, the same rule as `swarm-start-scoped`.
 
+### swarm-lock: one gate operation at a time
+
+Only one merge or gate operation may run at a time: `hr-gate --apply`, `hr-gate
+--sweep`, `pending-promote` and the work merge. Each takes one global lock with a
+non-blocking flock. A second caller prints `busy: <holder>` and exits 75 at once, with
+no API call; the next event or pass tries again. swarm-tick reports a busy lock as a
+note, not as an error.
+
+```sh
+swarm-lock -n work-merge -- git push origin HEAD:work   # run a command under the lock
+swarm-lock --status                                      # free, or busy and the holder
+```
+
+The lock file is `$SWARM_GATE_LOCK` (default `~/.cache/hr-gate.lock`); the holder note
+is next to it. `HR_GATE_LOCK_HELD=1` marks a child of a run that already holds the
+lock. `hr-gate --apply` also skips draft PRs before it takes the lock.
+
 ### swarm-hookgate: the CI-completion hook's front gate
 
 A CI-completion hook runs `ci-last-check SHA` first and stops when it exits 1. A storm

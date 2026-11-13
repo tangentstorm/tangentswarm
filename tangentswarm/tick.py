@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import brief, launches
+from . import brief, gatelock, launches
 
 ET = ZoneInfo('America/New_York')
 HOME = Path.home()
@@ -741,6 +741,9 @@ class Tick:
                 self.change(f"#{n} hr-gate --apply {n} (conditions 1-8 pass)")
                 continue
             rc, out = self.tool([BIN / 'hr-gate', '--apply', str(n)])
+            if rc == gatelock.EXIT_BUSY:
+                self.note(None, None, f"hr-gate --apply {n} skipped, gate lock {out.strip()[:150]}; next pass retries")
+                break
             msg = [l.strip() for l in out.splitlines() if re.match(r'\s+(moved|refused|stayed|stays|#\d+ has no)', l)]
             self.change(f"#{n} hr-gate --apply: " + (msg[-1] if msg else f"rc={rc}"))
             if any('stayed' in m and 'rebased onto' in m for m in msg):
@@ -822,6 +825,9 @@ class Tick:
     def pending_pass(self):
         argv = [BIN / 'pending-promote', '--dry-run' if self.dry else '--apply']
         rc, out = self.tool(argv)
+        if rc == gatelock.EXIT_BUSY:
+            self.note(None, None, f"pending-promote skipped, gate lock {out.strip()[:150]}; next pass retries")
+            return
         pat = (r'would run: hr-gate|would pass hr-gate|would enter STACKED|FORCE-PUSH STEPS'
                if self.dry else r'moved #|force-updated|saved \w|reset ')
         for line in out.splitlines():
