@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import brief, gatelock, launches
+from . import board, brief, gatelock, launches
 
 ET = ZoneInfo('America/New_York')
 HOME = Path.home()
@@ -384,7 +384,7 @@ def parked_windows():
 
 BOARD_Q = """query($c:String){organization(login:"tangentcode"){projectV2(number:4){items(first:100, after:$c){
  pageInfo{hasNextPage endCursor}
- nodes{id fieldValueByName(name:"Status"){...on ProjectV2ItemFieldSingleSelectValue{name}}
+ nodes{id fieldValueByName(name:"Status"){...on ProjectV2ItemFieldSingleSelectValue{name optionId}}
   content{__typename
    ...on PullRequest{number state isDraft headRefName headRefOid title repository{nameWithOwner}
      body milestone{title} labels(first:20){nodes{name}}
@@ -399,7 +399,7 @@ def board_prs(g):
             c = it.get('content') or {}
             if c.get('__typename') != 'PullRequest' or (c.get('repository') or {}).get('nameWithOwner') != REPO:
                 continue
-            col = (it.get('fieldValueByName') or {}).get('name')
+            col = board.column(it.get('fieldValueByName'))
             miles = [(c.get('milestone') or {}).get('title')]
             miles += [(i.get('milestone') or {}).get('title') for i in c['closingIssuesReferences']['nodes']]
             labels = {l['name'] for l in c['labels']['nodes']}
