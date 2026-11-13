@@ -14,6 +14,9 @@ bot holding it together by hand. Each pass:
        input       Claude is idle with text typed in its prompt that was not sent (this pass submits it)
        menu        Claude shows a numbered choice menu (a permission prompt and so on)
        exited      a shell where Claude ran, while the PR is still open
+  1b. For each open PR in In Progress or Auto Review whose body has no brief section,
+     writes the coordinator's brief file into the body (tangentswarm.brief). A PR with
+     no brief file is reported for judgment.
   2. For an In Progress PR whose Claude is finished, with no open Codex findings and a
      head that merges cleanly onto origin/main: marks the PR ready, moves the card to
      Auto Review and posts "@codex review" (once per head).
@@ -56,6 +59,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+from . import brief
 
 ET = ZoneInfo('America/New_York')
 HOME = Path.home()
@@ -376,7 +381,7 @@ BOARD_Q = """query($c:String){organization(login:"tangentcode"){projectV2(number
  nodes{id fieldValueByName(name:"Status"){...on ProjectV2ItemFieldSingleSelectValue{name}}
   content{__typename
    ...on PullRequest{number state isDraft headRefName headRefOid title repository{nameWithOwner}
-     milestone{title} labels(first:20){nodes{name}}
+     body milestone{title} labels(first:20){nodes{name}}
      closingIssuesReferences(first:10){nodes{milestone{title}}}}}}}}}}"""
 
 
@@ -394,6 +399,7 @@ def board_prs(g):
             labels = {l['name'] for l in c['labels']['nodes']}
             out[c['number']] = dict(number=c['number'], state=c['state'], draft=c['isDraft'],
                                     branch=c['headRefName'], head=c['headRefOid'], title=c['title'],
+                                    body=c.get('body') or '',
                                     col=col, item=it['id'], rank=milestone_rank(miles),
                                     parked=c['number'] in g['PARKED'] | EXTRA_PARKED or 'parked' in labels)
         if not data['pageInfo']['hasNextPage']:
@@ -547,6 +553,26 @@ class Tick:
                 wt = p['wt'] or {}
                 self.out(f"pane {p['id']} {p['window']}: {p['cls']} pr={p['pr']} card={col} branch={wt.get('branch')} "
                          f"dirty={wt.get('dirty')} ahead={wt.get('ahead')}")
+
+    # step 1b: every working PR carries its brief ---------------------------
+    def brief_pass(self):
+        working = {n: pr for n, pr in self.prs.items()
+                   if pr['state'] == 'OPEN' and not pr['parked'] and pr['col'] in WORKING_COLS}
+        for n, has_file in brief.missing_briefs(working):
+            if not has_file:
+                self.note(n, None, f"{working[n]['col']} with no brief in the PR body and no brief file "
+                                   f"{brief.brief_path(n)}: write the brief")
+                continue
+            if self.dry:
+                self.change(f"#{n} write the brief into the PR body")
+                continue
+            try:
+                what = brief.write_brief(n, REPO)
+            except (RuntimeError, subprocess.TimeoutExpired) as e:
+                self.note(n, None, f"failed to write the brief into the PR body: {e}")
+                continue
+            if what == 'wrote':
+                self.change(f"#{n} wrote the brief into the PR body")
 
     # step 2 + pane judgment -------------------------------------------------
     def panes_pass(self, scratch):
@@ -769,6 +795,7 @@ class Tick:
 
     def run(self):
         self.read()
+        self.brief_pass()
         with self.g['ScratchRepo']() as scratch:
             self.panes_pass(scratch)
             self.hr_pass(scratch)

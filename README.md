@@ -774,6 +774,9 @@ swarm-tick --verbose     # also print every pane's class and each tool's output
 Each pass classifies every pane in the tmux session `agents` (working, finished,
 idle-dirty, asking, input, menu, exited). It then does the safe mechanical moves:
 
+- An open In Progress or Auto Review PR whose body has no brief section gets the
+  coordinator's brief file (`$SWARM_BRIEF_DIR/<PR>.txt`) added at the end of its body.
+  A PR with no brief file is reported for judgment.
 - A draft In Progress PR whose Claude is finished (idle, clean worktree, local HEAD is
   the pushed PR head, no open Codex findings, head merges cleanly onto origin/main) is
   marked ready and moved to Auto Review, with one `@codex review` per head.
@@ -792,6 +795,23 @@ mid-work. A pass with nothing to do prints nothing.
 swarm-tick never merges, deploys, types into a pane, or kills or closes anything. It
 reuses the tools in `~/bin` (hr-gate, active-gate, pending-promote) and mn-workflow's
 state file; it does not replace them. Its log is `~/.local/state/swarm-tick/tick.log`.
+
+### swarm-brief: the brief in the PR body
+
+The coordinator writes one brief per worker PR to `$SWARM_BRIEF_DIR/<PR>.txt`. A draft
+PR scaffolded with only `Fixes #N` hides that brief from reviewers. `swarm-brief` puts
+the brief in a marked section at the end of the PR body:
+
+```sh
+swarm-brief 472 --file brief.md   # save the brief for #472, then write it into the body
+swarm-brief 472 473               # write the saved briefs into the bodies (no-op if present)
+swarm-brief --check 472 473       # report only
+```
+
+The section starts with `<!-- swarm-brief:start -->` and ends with
+`<!-- swarm-brief:end -->`. A gate check that reads the body (screenshots, the
+where-to-see line, the served commit, code-only) must skip this section, because a
+brief names those things before they exist. `tangentswarm.brief.strip_brief()` does that.
 
 ## License
 
