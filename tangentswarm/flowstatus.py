@@ -33,10 +33,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from . import proc
+
 GATE = os.environ.get('HR_GATE', os.path.expanduser('~/bin/hr-gate'))
 CACHE = Path(os.environ.get('SWARM_FLOW_STATUS_CACHE',
                             str(Path.home() / '.cache' / 'swarm-flow-status.json')))
-GIT_TIMEOUT = int(os.environ.get('HR_GATE_SH_TIMEOUT', '120'))
 REPO = 'tangentcode/platform'
 COLUMNS = ('Human Review', 'Pending', 'In Progress', 'Auto Review')  # hr-gate's internal names
 
@@ -81,8 +82,8 @@ def read_board(gql):
 
 
 def ls_heads(url, run=subprocess.run):
-    """{branch: sha} for every branch on origin, from ONE git ls-remote."""
-    r = run(['git', 'ls-remote', '--heads', url], capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    """{branch: sha} for every branch on origin, from ONE git ls-remote (proc.sh timeout)."""
+    r = proc.sh('git', 'ls-remote', '--heads', url, check=False, who='flow-status', run=run)
     if r.returncode:
         raise RuntimeError(f"git ls-remote failed: {(r.stderr or '').strip()[:200]}")
     heads = {}

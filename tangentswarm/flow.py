@@ -37,7 +37,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import board, gatelock
+from . import board, gatelock, proc
 
 HOME = Path.home()
 BIN = Path(os.environ.get('SWARM_TICK_BIN', str(HOME / 'bin')))
@@ -129,7 +129,7 @@ def event_wants_step(name, payload):
 # git in hr-gate's bare scratch repo (no worktree; never touches a Claude checkout)
 
 def git(scratch, *args, check=True):
-    r = subprocess.run(['git', '--git-dir', scratch.dir, *args], capture_output=True, text=True, timeout=300)
+    r = proc.sh('git', '--git-dir', scratch.dir, *args, check=False, timeout=300, who='swarm-flow')
     if check and r.returncode:
         raise RuntimeError(f"git {' '.join(args[:2])}: {(r.stderr or r.stdout).strip()[:200]}")
     return r
