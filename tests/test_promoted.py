@@ -187,7 +187,7 @@ def test_once_runs_fast_then_slow_under_the_lock(tmp_path, monkeypatch):
 
     def fast(cols):
         order.append('fast')
-        p.left = [] if moved else [(5, H5, 'no gate pass')]
+        p.left = [] if moved else [(5, H5, 'head 55555555 has no gate pass')]
         return list(moved)
     monkeypatch.setattr(p, 'fast_path', fast)
     monkeypatch.setattr(p, 'slow_path', lambda: order.append('slow'))
@@ -202,7 +202,7 @@ def test_once_runs_fast_then_slow_under_the_lock(tmp_path, monkeypatch):
     assert p.once() == 'promoted' and order == ['lock', 'fast', 'slow']  # nothing moved: slow path
     order.clear()
     moved.append(5)
-    assert p.once() == 'promoted' and order == ['lock', 'fast']  # slot filled: no pending-promote
+    assert p.once() == 'promoted' and order == ['lock', 'fast']  # slot filled: no re-gate
 
 
 def test_once_busy_then_retry_skips_the_outer_read(tmp_path, monkeypatch):
@@ -228,16 +228,25 @@ def test_once_idle_when_human_review_full(tmp_path):
     assert P.Promoter(g=g).once() == 'idle'
 
 
-def test_slow_path_promotes_and_pull_path_never_promotes(tmp_path, monkeypatch):
+def test_slow_path_only_regates_heads_without_a_gate_pass_and_never_merges(tmp_path, monkeypatch):
+    from tangentswarm import flow
+    monkeypatch.setattr(flow.Flow, 'promote', lambda self, cols: pytest.fail('no pending-promote'))
+    p = P.Promoter(g=G(tmp_path))
+    p.left = [(5, H5, 'head 55555555 has no gate pass'), (6, H6, 'is stacked: waits (no re-merge at promotion)'),
+              (7, '7' * 40, 'conflicts with #1 in Human Review')]
+    runs = []
+    p.slow_path(run=lambda argv: runs.append(argv) or 0)
+    assert runs == [[str(P.BIN / 'hr-gate'), '--apply', '5']]
+    p.left = p.left[1:]          # stacked and conflicting PRs wait: nothing is due
+    assert not p.slow_due(now=0) and p.regate() == []
+
+
+def test_pull_path_never_promotes(tmp_path, monkeypatch):
     from tangentswarm import flow
     calls = []
-    monkeypatch.setattr(flow.Flow, 'columns', lambda self: ({}, {}))
-    monkeypatch.setattr(flow.Flow, 'promote', lambda self, cols: calls.append('promote'))
     monkeypatch.setattr(flow.Flow, 'step', lambda self, promote=True: calls.append(f'step promote={promote}'))
-    p = P.Promoter(g=G(tmp_path))
-    p.slow_path()
-    p.pull_path()
-    assert calls == ['promote', 'step promote=False']
+    P.Promoter(g=G(tmp_path)).pull_path()
+    assert calls == ['step promote=False']
 
 
 def test_needs_pull_only_when_on_and_staging_short_with_ready(monkeypatch):

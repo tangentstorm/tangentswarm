@@ -25,10 +25,12 @@ it retries every RETRY seconds) and:
      goes to In Progress with a merge-main relay; a clean PR is left alone.
   3. Queued gate requests: a caller that found the serial lock busy queued its command
      (tangentswarm.gatelock) instead of giving up; the daemon runs each one under the lock.
-  4. Only if Human Review is still short and a Staging PR is left (stacked, or no gate
-     pass): pending-promote --apply, still under the lock. It runs ONCE per leftover
-     (PR, head), then again only after BACKSTOP seconds; a blocked head is re-gated by its
-     own event (the CI hook), not by a poll. 
+  4. Only if Human Review is still short and a Staging head has NO gate pass: hr-gate
+     --apply N for that head, still under the lock (a full gate, no merge, no push). It
+     runs ONCE per leftover (PR, head), then again only after BACKSTOP seconds. The work
+     merge happens ONCE, at Staging entry: there is no pending-promote here and no -vN
+     re-merge at promotion. A stacked PR, or one that conflicts with a Human Review PR,
+     waits; when that PR merges, step 2 rechecks it against main. 
   5. With SWARM_PROMOTE_PULL=1 (off by default): the swarm-flow pull and its advance,
      with no promote step. When Staging is short and Ready has a PR, the top Ready PR
      that stacks cleanly is merged into work ONCE (the push redeploys staging) and gated
@@ -247,16 +249,20 @@ class Promoter:
                 return flow.merge_commit(scratch, m, head, 'probe main') is not None
             return mainmerge.recheck(staging, main, clean, self.g['move'], say, details=details, dry=self.dry)
 
+    def regate(self):
+        """Leftover Staging heads with no gate pass: the only ones the slow path re-gates."""
+        return [(n, h, w) for n, h, w in self.left if w.endswith('has no gate pass')]
+
     def slow_due(self, now=None):
-        """True if a leftover Staging head has not had the slow path yet, or not for BACKSTOP
-        seconds. A blocked head is re-gated by its own event (the CI hook), so re-running the
-        4-minute pending-promote for it on every poll only holds the lock against that event."""
+        """True if a leftover head with no gate pass has not been re-gated yet, or not for
+        BACKSTOP seconds. A blocked head is re-gated by its own event (the CI hook), so a
+        re-gate on every poll would only hold the lock against that event."""
         now = time.time() if now is None else now
-        return any(now - self.tried.get((n, h), -BACKSTOP) >= BACKSTOP for n, h, _ in self.left)
+        return any(now - self.tried.get((n, h), -BACKSTOP) >= BACKSTOP for n, h, _ in self.regate())
 
     def mark_tried(self, now=None):
         now = time.time() if now is None else now
-        for n, h, _ in self.left:
+        for n, h, _ in self.regate():
             self.tried[(n, h)] = now
 
     def log_text(self):
@@ -285,7 +291,7 @@ class Promoter:
         if d.get('isDraft'):
             return 'is a draft'
         if d.get('baseRefName') != 'main' or self.g['stacked_base'](d.get('body') or ''):
-            return 'is stacked (pending-promote decides)'
+            return 'is stacked: waits (no re-merge at promotion)'
         who = human_after(d, t)
         if who:
             return f"human comment after the gate ({', '.join(sorted(set(who)))})"
@@ -343,14 +349,18 @@ class Promoter:
                 moved.append(n)
         return moved
 
-    def slow_path(self):
-        """After the fast move: pending-promote if Human Review is still short."""
-        from . import flow
-        f = flow.Flow(dry_run=self.dry, out=lambda line: None, g=self.g)
-        _, cols = f.columns()
-        f.promote(cols)
-        for line in f.did + f.notes:
-            say('flow: ' + line)
+    def slow_path(self, run=None):
+        """After the fast move, Human Review still short: hr-gate --apply for each leftover head
+        with no gate pass (a full gate under our lock; it moves the card to Human Review when a
+        slot is free, or logs a pass the next fast path uses). No pending-promote, no merge."""
+        run = run or gatelock.run_held
+        for n, h, _ in self.regate():
+            argv = [str(BIN / 'hr-gate'), '--apply', str(n)]
+            if self.dry:
+                say(f"would run {' '.join(argv)} (head {h[:8]} has no gate pass)")
+                continue
+            rc = run(argv)
+            say(f"re-gated #{n} at {h[:8]}: hr-gate --apply rc={rc}")
 
     def pull_path(self):
         """SWARM_PROMOTE_PULL=1: the swarm-flow pull and its advance, with no promote step.
@@ -396,8 +406,8 @@ class Promoter:
                 elif hr < HR_TARGET and self.slow_due():
                     self.mark_tried()
                     self.slow_path()
-                elif hr < HR_TARGET and self.left:
-                    say('slow path already ran for ' + ', '.join(f'#{n} at {h[:8]}' for n, h, _ in self.left)
+                elif hr < HR_TARGET and self.regate():
+                    say('re-gate already ran for ' + ', '.join(f'#{n} at {h[:8]}' for n, h, _ in self.regate())
                         + f'; waiting for a new head or gate event (backstop {BACKSTOP}s)')
                 if PULL:
                     self.pull_path()
