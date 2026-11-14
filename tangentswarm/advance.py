@@ -18,7 +18,8 @@ the first useful step, nearest Human Review first:
 Nothing to do: exit 0 with one summary line.
 
     swarm-advance [--dry-run]
-Exit 0 = a step ran or nothing to do, 75 = busy (the serial lock is held), 2 = error.
+Exit 0 = a step ran or nothing to do, 75 = busy (queued: the swarm-promoted daemon runs it
+under the lock), 2 = error.
 """
 import argparse
 import json
@@ -208,6 +209,16 @@ class Advance:
         return 0
 
 
+def queue_self(qdir=None):
+    """Queue `swarm-advance` (the ~/bin wrapper) for the daemon. Returns a note."""
+    from .promoted import BIN
+    try:
+        gatelock.enqueue([str(BIN / 'swarm-advance')], by=f"pid {os.getpid()}", qdir=qdir)
+        return 'queued for swarm-promoted'
+    except (OSError, ValueError) as e:
+        return f'NOT queued ({e})'
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='swarm-advance', description=__doc__.split('\n', 1)[0])
     ap.add_argument('--dry-run', action='store_true', help='print what it would do; change nothing')
@@ -218,7 +229,8 @@ def main(argv=None):
         with gatelock.gate_lock('swarm-advance'):
             return Advance().step()
     except gatelock.Busy as e:
-        print(f"busy: {e}")
+        # No "busy, give up": the swarm-promoted daemon owns the queue and runs it under the lock.
+        print(f"busy: {e}; " + queue_self())
         return gatelock.EXIT_BUSY
     except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as e:
         print(f"swarm-advance error: {e}", file=sys.stderr)

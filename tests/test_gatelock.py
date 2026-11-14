@@ -143,3 +143,48 @@ def test_drain_runs_oldest_first_and_drops_stale_or_foreign(tmp_path):
     assert ran == [['/b/pending-promote', '--apply'], ['/b/hr-gate', '--apply', '7']]
     assert out == [(r, 0) for r in ran] and not list(tmp_path.glob('*.json'))
     assert any('dropped /b/hr-gate --apply 1' in s for s in said) and any('not for' in s for s in said)
+
+
+def test_wait_takes_the_lock_once_the_holder_is_done(lock):
+    p = holder_proc(lock, 1.5)
+    try:
+        t0 = time.time()
+        with gl.gate_lock('waiter', env={}, wait=10):
+            waited = time.time() - t0
+            assert 'waiter' in gl.holder()
+        assert 0.5 < waited < 8
+    finally:
+        p.wait()
+
+
+def test_wait_gives_up_as_busy_after_its_time(lock):
+    p = holder_proc(lock, 3)
+    try:
+        t0 = time.time()
+        with pytest.raises(gl.Busy):
+            with gl.gate_lock('waiter', env={}, wait=0.5):
+                pass
+        assert 0.4 < time.time() - t0 < 2.5
+    finally:
+        p.wait()
+
+
+def test_cli_wait_alone_returns_when_the_lock_is_free(lock, capsys):
+    """The pgrep waiter loop's replacement: no process names, so no self-match."""
+    p = holder_proc(lock, 1.5)
+    try:
+        assert gl.main(['--wait', '0.2']) == gl.EXIT_BUSY
+        assert 'busy after 0.2s' in capsys.readouterr().out
+        assert gl.main(['--wait', '10']) == 0
+    finally:
+        p.wait()
+    assert not gl.is_busy()
+
+
+def test_swarm_advance_may_queue_itself(tmp_path, monkeypatch):
+    from tangentswarm import advance
+    note = advance.queue_self(qdir=tmp_path)
+    assert note == 'queued for swarm-promoted'
+    ((_, req),) = gl.queued(qdir=tmp_path)
+    assert req['argv'][0].endswith('/swarm-advance')
+    assert advance.queue_self(qdir=tmp_path) and len(gl.queued(qdir=tmp_path)) == 1  # one per command

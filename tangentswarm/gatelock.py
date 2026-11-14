@@ -24,7 +24,13 @@ Contract (hr-gate and pending-promote implement the same one inline):
                each request under the lock, oldest first (drain). Only QUEUE_TOOLS may be
                queued; a request older than QUEUE_MAX_AGE is dropped.
 
+  waiting      to wait for the lock, use swarm-lock --wait SECONDS (flock). Never a
+               `until ! pgrep -f pending-promote` loop: -f matches the loop's own command
+               line, so it waits forever, and a gap between two runs is not a free lock.
+
     swarm-lock -n work-merge -- git -C WORKTREE push origin HEAD:work
+    swarm-lock --wait 600 -n check -- CMD    wait up to 600 s for the lock, then run CMD
+    swarm-lock --wait 600                    wait until the lock is free, then exit 0
     swarm-lock --status
     swarm-lock --queued
 """
@@ -43,7 +49,7 @@ from pathlib import Path
 LOCK = Path(os.environ.get('SWARM_GATE_LOCK', str(Path.home() / '.cache' / 'swarm-serial.lock')))
 EXIT_BUSY = 75
 QUEUE_DIR = Path(os.environ.get('SWARM_GATE_QUEUE', str(Path.home() / '.cache' / 'swarm-gate-queue')))
-QUEUE_TOOLS = ('hr-gate', 'pending-promote')
+QUEUE_TOOLS = ('hr-gate', 'pending-promote', 'swarm-advance')
 QUEUE_MAX_AGE = int(os.environ.get('SWARM_GATE_QUEUE_MAX_AGE', '1800'))
 HELD_ENV = 'SWARM_SERIAL_HELD'
 OLD_HELD_ENV = 'HR_GATE_LOCK_HELD'
@@ -80,19 +86,31 @@ def holder(lock=None):
         return 'unknown holder'
 
 
+def _take(f, wait, sleep=time.sleep, clock=time.monotonic):
+    """flock(LOCK_EX) on f, trying for up to `wait` seconds (0: one try). True if taken."""
+    end = clock() + wait
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if clock() >= end:
+                return False
+            sleep(min(1.0, max(0.05, end - clock())))
+
+
 @contextlib.contextmanager
-def gate_lock(name, lock=None, env=os.environ):
-    """Hold the global gate lock for the block, or raise Busy at once. Re-entrant via HELD_ENV."""
+def gate_lock(name, lock=None, env=os.environ, wait=0):
+    """Hold the global gate lock for the block, or raise Busy (at once, or after `wait`
+    seconds). Re-entrant via HELD_ENV."""
     lock = lock or LOCK
     if already_held(env):
         yield
         return
     lock.parent.mkdir(parents=True, exist_ok=True)
     with open(lock, 'a') as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise Busy(holder(lock)) from None
+        if not _take(f, wait):
+            raise Busy(holder(lock))
         mine = f"{name} pid {os.getpid()} since {datetime.now().isoformat(timespec='seconds')}\n"
         holder_path(lock).write_text(mine)
         try:
@@ -190,6 +208,8 @@ def main(argv=None):
     ap.add_argument('-n', '--name', default='swarm-lock', help='holder name shown to a busy caller')
     ap.add_argument('--status', action='store_true', help='print busy or free, and the holder')
     ap.add_argument('--queued', action='store_true', help='list queued requests')
+    ap.add_argument('--wait', type=float, default=0, metavar='SECONDS',
+                    help='wait up to SECONDS for the lock (flock; use this, not a pgrep loop)')
     ap.add_argument('cmd', nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
     if a.status:
@@ -201,10 +221,17 @@ def main(argv=None):
             print(f"{int(time.time() - req.get('at', 0))}s\t{req.get('by') or '?'}\t{' '.join(req.get('argv') or [])}")
         return 0
     cmd = a.cmd[1:] if a.cmd[:1] == ['--'] else a.cmd
+    if not cmd and a.wait:
+        try:
+            with gate_lock(f"{a.name} (waiter)", wait=a.wait):
+                return 0  # the lock was free; released at once
+        except Busy as e:
+            print(f"busy after {a.wait:g}s: {e}")
+            return EXIT_BUSY
     if not cmd:
         ap.error('give a command after --')
     try:
-        with gate_lock(f"{a.name} ({' '.join(cmd)[:80]})"):
+        with gate_lock(f"{a.name} ({' '.join(cmd)[:80]})", wait=a.wait):
             env = dict(os.environ, **{HELD_ENV: '1', OLD_HELD_ENV: '1'})
             return subprocess.run(cmd, env=env).returncode
     except Busy as e:
