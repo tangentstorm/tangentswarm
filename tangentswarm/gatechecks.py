@@ -1,4 +1,4 @@
-"""hr-gate conditions that let a broken PR into Human Review (platform #479).
+"""Two hr-gate conditions that let a broken PR into Human Review (platform #479).
 
 Condition 7a (screenshots). hr-gate's IMG_RE took any markdown image, so a bare relative
 name such as ![x](pr479-attr-gui.png) passed. It never renders on GitHub. Now every image
@@ -16,11 +16,16 @@ in the body must be an absolute https URL that resolves:
                                                       (contents API, app quota)
   any other https URL                                 GET answers 200 with an image/* type
 
+Condition 6 (deployed + served). It was best-effort and always passed. For a PR that
+touches served files (web/, app/, api/), ENTRY (into Staging or Human Review, and the
+instant promote) now needs the static .deploy-sha to contain the head. A re-gate of a card
+already in Human Review (a merge-only re-gate) stays lenient.
 """
 import re
 import urllib.request
 
 SHOTS_BRANCH = 'swarm-shots'
+SERVED_RE = re.compile(r'^(web|api|app)/')
 
 _MD = re.compile(r'!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)')
 _TAG = re.compile(r'<img\s[^>]*?src\s*=\s*["\']?([^"\'\s>]+)', re.I)
@@ -87,3 +92,16 @@ def check_images(body, repo, exists, probe=probe_image):
         return False, f"{len(bad)} of {len(urls)} image(s) do not render: " + '; '.join(bad[:3])
     return True, f"{len(urls)} image(s), all absolute https and resolving"
 
+
+def check_served(paths, entering, static_sha, has_head, err=None):
+    """(ok, why) for condition 6. has_head(sha) -> bool: the deployed commit contains the head.
+    entering: the card is not already in Human Review (strict). Else lenient (a re-gate)."""
+    if not any(SERVED_RE.search(p) for p in paths):
+        return True, 'n/a (no served files: web/, api/, app/)'
+    if err or not static_sha:
+        why = f"cannot read the static .deploy-sha ({err or 'empty'})"
+        return (False, why) if entering else (True, 'lenient re-gate: ' + why)
+    if has_head(static_sha):
+        return True, f"static .deploy-sha {static_sha[:8]} contains the head"
+    why = f"static .deploy-sha {static_sha[:8]} LACKS the head: staging does not serve it yet"
+    return (False, why) if entering else (True, 'lenient re-gate: ' + why)

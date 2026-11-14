@@ -14,6 +14,8 @@ it retries every RETRY seconds) and:
          failed condition (the head did not change since the gate),
        - it is open, not a draft, and not stacked (base main, no stacked banner),
        - no person (a User, not a bot or app) commented or reviewed after that gate,
+       - for a PR that touches web/, app/ or api/: the static .deploy-sha contains the
+         head (hr-gate condition 6, strict on entry),
        - it merges cleanly with main, and with main plus each Human Review head
          (local merge-tree, no API call).
      The reads are one GraphQL query for the Staging PRs. The card moves and an hr-gate
@@ -43,7 +45,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import board, gatelock
+from . import board, gatechecks, gatelock
 
 HOME = Path.home()
 BIN = Path(os.environ.get('SWARM_TICK_BIN', str(HOME / 'bin')))
@@ -141,7 +143,7 @@ def gated_heads(log_text):
     return set(gate_times(log_text))
 
 
-DETAIL_FIELDS = """number state headRefOid headRefName isDraft baseRefName body
+DETAIL_FIELDS = """number state headRefOid headRefName isDraft baseRefName body files(first:100){nodes{path}}
  labels(first:20){nodes{name}} closingIssuesReferences(first:10){nodes{number labels(first:20){nodes{name}}}}
  comments(last:30){nodes{createdAt author{__typename login}}}
  reviews(last:30){nodes{submittedAt author{__typename login}}}"""
@@ -287,7 +289,19 @@ class Promoter:
         who = human_after(d, t)
         if who:
             return f"human comment after the gate ({', '.join(sorted(set(who)))})"
-        return merge(head)
+        return self.served_problem(d, head) or merge(head)
+
+    def served_problem(self, d, head):
+        """None if staging serves the head, else why not. Only for a PR that touches served
+        files (web/, app/, api/): hr-gate condition 6, strict on entry (platform #479 entered
+        Human Review before staging served its head). Local reads only: the .deploy-sha file
+        and git merge-base."""
+        paths = [f['path'] for f in ((d.get('files') or {}).get('nodes') or []) if f.get('path')]
+        if not any(gatechecks.SERVED_RE.search(x) for x in paths):
+            return None
+        host, sha, _, _, err = self.g['served'](self.g['site_for'](d, None))
+        ok, why = gatechecks.check_served(paths, True, sha, lambda s: self.g['contains'](head, s), err)
+        return None if ok else f"{host}: {why}"
 
     def fast_path(self, cols):
         """Fill Human Review from Staging with the cheap check only. Returns the moved PRs."""

@@ -1,4 +1,4 @@
-"""gatechecks: screenshots must render (7a)."""
+"""gatechecks: screenshots must render (7a); entry needs staging to serve the head (6)."""
 import urllib.error
 
 from tangentswarm import gatechecks as G
@@ -63,3 +63,14 @@ def test_other_https_hosts_must_load_as_an_image():
     ok, why = G.probe_image('https://x/y.png', opener=gone)
     assert not ok and '404' in why
 
+
+def test_served_check_is_strict_on_entry_and_lenient_on_a_regate():
+    web = ['web/a.ts', 'README.md']
+    assert G.check_served(['README.md'], True, None, never)[0]
+    assert G.check_served(web, True, 'abc12345', lambda s: True)[0]
+    ok, why = G.check_served(web, True, 'abc12345', lambda s: False)
+    assert not ok and 'LACKS the head' in why
+    ok, why = G.check_served(web, False, 'abc12345', lambda s: False)
+    assert ok and why.startswith('lenient re-gate')
+    assert not G.check_served(['api/x.py'], True, None, never, err='cannot read')[0]
+    assert G.check_served(['app/x'], False, None, never, err='cannot read')[0]

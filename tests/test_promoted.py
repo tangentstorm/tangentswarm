@@ -321,3 +321,19 @@ def test_once_drains_queued_requests_under_its_lock(tmp_path, monkeypatch, own_q
     P.gatelock.enqueue(['/b/hr-gate', '--apply', '9'], qdir=own_queue)
     assert p.once() == 'promoted' and order == ['lock', '9', 'unlock']
     assert P.gatelock.queued(own_queue) == []
+
+
+def test_fast_path_needs_staging_to_serve_a_web_head(tmp_path, clean):
+    web = dict(detail(5, H5), files={'nodes': [{'path': 'web/app.ts'}]}, headRefName='b')
+    for served_sha, want in (('d' * 40, [5]), ('e' * 40, [])):   # 'd...' contains the head
+        g = G(tmp_path, details={5: web})
+        g.update(site_for=lambda pr, o: 'work',
+                 served=lambda site: ('staging.example', served_sha, None, None, None),
+                 contains=lambda anc, desc: desc.startswith('d'))
+        assert P.Promoter(g=g).fast_path(COLS) == want
+        assert g.moves == ([('I5', board.HUMAN_REVIEW)] if want else [])
+    # a .deploy-sha that cannot be read blocks entry too
+    g = G(tmp_path, details={5: web})
+    g.update(site_for=lambda pr, o: 'work', served=lambda site: ('h', None, None, None, 'cannot read'),
+             contains=lambda a, d: True)
+    assert P.Promoter(g=g).fast_path(COLS) == []
