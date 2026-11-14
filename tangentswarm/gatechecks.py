@@ -25,6 +25,13 @@ import re
 import urllib.request
 
 SHOTS_BRANCH = 'swarm-shots'
+
+# The one rule every coder gets (launch line, gate relays). Keep it one line.
+SHOTS_RULE = ("Screenshots in the PR body must be absolute https URLs that render on GitHub: drag the "
+              "image into a GitHub comment box and paste the github.com/user-attachments/assets/... URL, "
+              f"or push it to the {SHOTS_BRANCH} branch and use https://github.com/<owner>/<repo>/blob/"
+              f"{SHOTS_BRANCH}/<path>?raw=true. Never a relative file name such as ![x](shot.png); "
+              "hr-gate fails it.")
 SERVED_RE = re.compile(r'^(web|api|app)/')
 
 _MD = re.compile(r'!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)')

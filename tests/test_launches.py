@@ -229,3 +229,9 @@ def test_shell_with_real_commits_or_no_brief_is_still_judgment(monkeypatch, tmp_
     t = scaffold_tick(monkeypatch, tmp_path, 'Start #440', brief_text=None)
     t.no_claude(7, t.prs[7], t.panes)
     assert 'Claude exited' in t.notes[0][1] and L.read_queue() == []
+
+
+def test_brief_line_tells_the_coder_to_use_absolute_image_urls():
+    line = L.brief_line('/b/486.txt')
+    assert 'absolute https URLs' in line and 'user-attachments' in line and 'swarm-shots' in line
+    assert 'Never a relative file name' in line

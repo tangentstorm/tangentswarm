@@ -294,7 +294,8 @@ ROW_REASONS = {
     '4 ': 'needs a MinBot pass on this head',
     '5 ': 'Linux CI not green',
     '6 ': 'staging redeploy needed (served commit lacks head, or body names none)',
-    '7a': 'screenshots missing or older than the head/served commit',
+    '7a': 'screenshots missing or do not render: use absolute https image URLs (user-attachments or '
+          'the swarm-shots branch), never a relative file name',
     '7b': '"where to see it" line missing',
     '8 ': 'Michal commented after the head',
 }

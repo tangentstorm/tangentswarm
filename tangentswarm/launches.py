@@ -150,8 +150,9 @@ def start_scoped(branch, window=None):
 
 
 def brief_line(path):
+    from .gatechecks import SHOTS_RULE
     return (f"Your brief is in {path}. Read the whole file first, then follow it. "
-            "It names your branch, the issue, the tests and how to report.")
+            "It names your branch, the issue, the tests and how to report. " + SHOTS_RULE)
 
 
 def send_brief(pane, unit, path):
