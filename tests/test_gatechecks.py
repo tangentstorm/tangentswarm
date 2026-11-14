@@ -74,3 +74,16 @@ def test_served_check_is_strict_on_entry_and_lenient_on_a_regate():
     assert ok and why.startswith('lenient re-gate')
     assert not G.check_served(['api/x.py'], True, None, never, err='cannot read')[0]
     assert G.check_served(['app/x'], False, None, never, err='cannot read')[0]
+
+
+def test_served_accepts_the_vn_tip_condition_9_picked():
+    """platform #447: work 95f38a27 has ptw/cursor-item-end-v2 06347b83, not head 0a8b0f7a."""
+    web = ['web/ptw/cursor.ts']
+    inside = {('06347b83', '95f38a27')}
+    contains = lambda anc, desc: (anc, desc) in inside
+    ok, why = G.check_served(web, True, '95f38a27', lambda s: False,
+                             tips=[('ptw/cursor-item-end-v2', '06347b83')], contains=contains)
+    assert ok and 'contains ptw/cursor-item-end-v2 06347b83' in why
+    ok, why = G.check_served(web, True, '95f38a27', lambda s: False,
+                             tips=[('ptw/cursor-item-end-v1', 'deadbeef')], contains=contains)
+    assert not ok and 'LACKS the head' in why

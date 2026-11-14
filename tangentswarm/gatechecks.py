@@ -100,9 +100,12 @@ def check_images(body, repo, exists, probe=probe_image):
     return True, f"{len(urls)} image(s), all absolute https and resolving"
 
 
-def check_served(paths, entering, static_sha, has_head, err=None):
+def check_served(paths, entering, static_sha, has_head, err=None, tips=(), contains=None):
     """(ok, why) for condition 6. has_head(sha) -> bool: the deployed commit contains the head.
-    entering: the card is not already in Human Review (strict). Else lenient (a re-gate)."""
+    entering: the card is not already in Human Review (strict). Else lenient (a re-gate).
+    tips: [(name, sha)] the stack tips condition 9 picked (a -vN branch). The staging pull
+    merges that tip into work, not the plain head, so a deployed commit that contains the
+    tip serves the PR. contains(tip_sha, static_sha) -> bool checks it."""
     if not any(SERVED_RE.search(p) for p in paths):
         return True, 'n/a (no served files: web/, api/, app/)'
     if err or not static_sha:
@@ -110,5 +113,8 @@ def check_served(paths, entering, static_sha, has_head, err=None):
         return (False, why) if entering else (True, 'lenient re-gate: ' + why)
     if has_head(static_sha):
         return True, f"static .deploy-sha {static_sha[:8]} contains the head"
+    for name, sha in tips:
+        if sha and contains and contains(sha, static_sha):
+            return True, f"static .deploy-sha {static_sha[:8]} contains {name} {sha[:8]} (the tip condition 9 picked)"
     why = f"static .deploy-sha {static_sha[:8]} LACKS the head: staging does not serve it yet"
     return (False, why) if entering else (True, 'lenient re-gate: ' + why)
