@@ -18,7 +18,10 @@ it retries every RETRY seconds) and:
          (local merge-tree, no API call).
      The reads are one GraphQL query for the Staging PRs. The card moves and an hr-gate
      PASS line is written. This repeats until Human Review is full.
-  2. Only if Human Review is still short and a Staging PR is left (stacked, or no gate
+  2. When main moved (git ls-remote each poll, no API quota): recheck ONLY "merges
+     cleanly with main" for each Staging PR left (tangentswarm.mainmerge). A conflict
+     goes to In Progress with a merge-main relay; a clean PR is left alone.
+  3. Only if Human Review is still short and a Staging PR is left (stacked, or no gate
      pass): pending-promote --apply, still under the lock. It runs ONCE per leftover
      (PR, head), then again only after BACKSTOP seconds; a blocked head is re-gated by its
      own event (the CI hook), not by a poll. With SWARM_PROMOTE_PULL=1,
@@ -100,7 +103,7 @@ def gated_heads(log_text):
     return set(gate_times(log_text))
 
 
-DETAIL_FIELDS = """number state headRefOid isDraft baseRefName body
+DETAIL_FIELDS = """number state headRefOid headRefName isDraft baseRefName body
  labels(first:20){nodes{name}} closingIssuesReferences(first:10){nodes{labels(first:20){nodes{name}}}}
  comments(last:30){nodes{createdAt author{__typename login}}}
  reviews(last:30){nodes{submittedAt author{__typename login}}}"""
@@ -168,6 +171,29 @@ class Promoter:
         self.dry = dry_run
         self.left = []    # [(n, head, why)] Staging PRs the last fast path did not move
         self.tried = {}   # {(n, head): time} the slow path last ran for this leftover head
+        self.last_main = None  # main SHA the last main-merge recheck ran for
+
+    def main_sha(self):
+        """origin main's SHA via git ls-remote (no API quota), or None on an error."""
+        try:
+            r = self.g['sh']('git', 'ls-remote', self.g['origin_url'](), 'refs/heads/main', check=False)
+            sha = (r.stdout or '').split()[0] if r.returncode == 0 and r.stdout.strip() else ''
+            return sha if len(sha) == 40 else None
+        except Exception:
+            return None
+
+    def main_pass(self, cols, moved, main):
+        """Main moved: recheck only "merges cleanly with main" for the Staging PRs left."""
+        from . import flow, mainmerge
+        staging = [p for p in cols.get(board.STAGING, []) if p['number'] not in moved]
+        if not staging:
+            return []
+        details = read_details(self.g['gql'], [p['number'] for p in staging])
+        with self.g['ScratchRepo']() as scratch:
+            def clean(m, head):
+                scratch.ensure(m, head)
+                return flow.merge_commit(scratch, m, head, 'probe main') is not None
+            return mainmerge.recheck(staging, main, clean, self.g['move'], say, details=details, dry=self.dry)
 
     def slow_due(self, now=None):
         """True if a leftover Staging head has not had the slow path yet, or not for BACKSTOP
@@ -269,16 +295,24 @@ class Promoter:
     def once(self, retry=False):
         """One check. Returns 'idle', 'busy' or 'promoted'. A retry after busy goes straight
         to the lock (the read under the lock is fresh), so a long busy spell costs no reads."""
+        main = self.main_sha()
+        main_moved = main is not None and main != self.last_main
         if not retry:
             cols = read_columns(self.g['gql'])
-            if not needs_promotion(cols):
+            if not needs_promotion(cols) and not main_moved:
                 return 'idle'
             hr, st = len(cols.get(board.HUMAN_REVIEW, [])), len(cols.get(board.STAGING, []))
-            say(f"Human Review {hr}/{HR_TARGET}, Staging {st}: promoting")
+            if needs_promotion(cols):
+                say(f"Human Review {hr}/{HR_TARGET}, Staging {st}: promoting")
+            if main_moved:
+                say(f"main is at {main[:8]} (was {(self.last_main or 'unknown')[:8]}): Staging merge recheck")
         try:
             with (gatelock.gate_lock('swarm-promoted') if not self.dry else _null()):
                 cols = read_columns(self.g['gql'])  # fresh, under the lock
                 moved = self.fast_path(cols) if needs_promotion(cols) else []
+                if main_moved:
+                    self.main_pass(cols, moved, main)
+                    self.last_main = main
                 hr = len(cols.get(board.HUMAN_REVIEW, [])) + len(moved)
                 if PULL:
                     self.slow_path()

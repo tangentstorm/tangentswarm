@@ -250,3 +250,27 @@ def test_once_does_not_rerun_the_slow_path_for_the_same_blocked_head(tmp_path, m
     p.once()
     p.once()
     assert slow == [1]
+
+
+def test_once_rechecks_staging_only_when_main_moves(tmp_path, monkeypatch):
+    g = G(tmp_path)
+    g['gql'] = lambda q, c=None: page(item(1, HR, 'a'), item(2, HR, 'b'), item(5, ST, H5))
+    p = P.Promoter(g=g)
+    mains, passes = ['1' * 40], []
+    monkeypatch.setattr(p, 'main_sha', lambda: mains[0])
+    monkeypatch.setattr(p, 'main_pass', lambda cols, moved, main: passes.append(main))
+    monkeypatch.setattr(P.gatelock, 'gate_lock', lambda name: P._null())
+    assert p.once() == 'promoted' and passes == ['1' * 40]  # first sight of main
+    assert p.once() == 'idle' and len(passes) == 1          # Human Review full, main unchanged
+    mains[0] = '2' * 40
+    assert p.once() == 'promoted' and passes[-1] == '2' * 40
+
+
+def test_main_sha_reads_ls_remote_and_survives_errors(tmp_path):
+    import subprocess
+    g = G(tmp_path)
+    g['origin_url'] = lambda: 'url'
+    g['sh'] = lambda *a, check=True: subprocess.CompletedProcess(a, 0, 'c' * 40 + '\trefs/heads/main\n', '')
+    assert P.Promoter(g=g).main_sha() == 'c' * 40
+    g['sh'] = lambda *a, check=True: subprocess.CompletedProcess(a, 128, '', 'fatal')
+    assert P.Promoter(g=g).main_sha() is None
