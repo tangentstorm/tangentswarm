@@ -19,7 +19,10 @@ in the body must be an absolute https URL that resolves:
 Condition 6 (deployed + served). It was best-effort and always passed. For a PR that
 touches served files (web/, app/, api/), ENTRY (into Staging or Human Review, and the
 instant promote) now needs the static .deploy-sha to contain the head. A re-gate of a card
-already in Human Review (a merge-only re-gate) stays lenient.
+already in Human Review (a merge-only re-gate) stays lenient. Entry also fails when
+origin/work itself is broken (work_problem): it holds conflict markers, or its latest
+Redeploy run failed. Work commit 0d249b69 (#447) reached work with markers at 1:19 AM ET,
+its Redeploy failed, and the gate still passed.
 """
 import re
 import urllib.request
@@ -100,14 +103,32 @@ def check_images(body, repo, exists, probe=probe_image):
     return True, f"{len(urls)} image(s), all absolute https and resolving"
 
 
-def check_served(paths, entering, static_sha, has_head, err=None, tips=(), contains=None):
+MARKER_GREP = ['grep', '-l', '--all-match', '-e', '^<<<<<<< ', '-e', '^>>>>>>> ']  # git grep args
+
+
+def work_problem(marker_files, redeploy=None):
+    """Why origin/work is broken, or None. marker_files: files with both <<<<<<< and >>>>>>>
+    lines (git <MARKER_GREP> origin/work). redeploy: the latest work Redeploy run
+    {sha, status, conclusion} or None. Only a FAILED run counts (skipped is the webhook mode)."""
+    if marker_files:
+        more = f" and {len(marker_files) - 3} more" if len(marker_files) > 3 else ''
+        return f"origin/work has conflict markers in {', '.join(marker_files[:3])}{more}"
+    if redeploy and (redeploy.get('conclusion') or '').lower() in ('failure', 'timed_out', 'startup_failure'):
+        return f"the latest work Redeploy run failed (work {(redeploy.get('sha') or '')[:8]})"
+    return None
+
+
+def check_served(paths, entering, static_sha, has_head, err=None, tips=(), contains=None, work_bad=None):
     """(ok, why) for condition 6. has_head(sha) -> bool: the deployed commit contains the head.
     entering: the card is not already in Human Review (strict). Else lenient (a re-gate).
     tips: [(name, sha)] the stack tips condition 9 picked (a -vN branch). The staging pull
     merges that tip into work, not the plain head, so a deployed commit that contains the
-    tip serves the PR. contains(tip_sha, static_sha) -> bool checks it."""
+    tip serves the PR. contains(tip_sha, static_sha) -> bool checks it.
+    work_bad: work_problem()'s reason; it fails entry before any SHA check."""
     if not any(SERVED_RE.search(p) for p in paths):
         return True, 'n/a (no served files: web/, api/, app/)'
+    if work_bad:
+        return (False, work_bad) if entering else (True, 'lenient re-gate: ' + work_bad)
     if err or not static_sha:
         why = f"cannot read the static .deploy-sha ({err or 'empty'})"
         return (False, why) if entering else (True, 'lenient re-gate: ' + why)

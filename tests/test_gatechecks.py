@@ -87,3 +87,21 @@ def test_served_accepts_the_vn_tip_condition_9_picked():
     ok, why = G.check_served(web, True, '95f38a27', lambda s: False,
                              tips=[('ptw/cursor-item-end-v1', 'deadbeef')], contains=contains)
     assert not ok and 'LACKS the head' in why
+
+
+def test_a_broken_work_branch_fails_entry():
+    files = ['web/js/ptw/ChessTrackParser.mts', 'web/js/ptw/MenuTrackParser.mts', 'web/tc/AnimCompiler.mts',
+             'web/tc/MnAnimPlugin.playhead.test.mts']
+    why = G.work_problem(files)
+    assert why == ('origin/work has conflict markers in web/js/ptw/ChessTrackParser.mts, '
+                   'web/js/ptw/MenuTrackParser.mts, web/tc/AnimCompiler.mts and 1 more')
+    failed = {'sha': '0d249b69d06d', 'status': 'completed', 'conclusion': 'failure'}
+    assert G.work_problem([], failed) == 'the latest work Redeploy run failed (work 0d249b69)'
+    assert G.work_problem([], dict(failed, conclusion='skipped')) is None
+    assert G.work_problem([], dict(failed, conclusion='success')) is None
+    assert G.work_problem([], None) is None
+    web = ['web/a.ts']
+    ok, why = G.check_served(web, True, 'abc12345', lambda s: True, work_bad='origin/work has conflict markers in x')
+    assert not ok and why.startswith('origin/work has conflict markers')
+    assert G.check_served(web, False, 'abc12345', lambda s: True, work_bad='w')[1] == 'lenient re-gate: w'
+    assert G.check_served(['README.md'], True, None, never, work_bad='w')[0]   # no served files
