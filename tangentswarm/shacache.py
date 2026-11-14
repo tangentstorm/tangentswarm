@@ -10,6 +10,11 @@ commit SHA and can be kept:
 
 memo() keeps a value only when keep(value) says it is final. The store is hr-gate's own
 JSON cache (cache_get/cache_set), under keys that start with "sha:".
+
+tree_memo() also keeps a final answer under the commit's TREE. A new head with the same
+tree as a tested commit (an amended message, a re-push, a -vN tip, a main merge that
+changed nothing) reuses that answer instead of waiting for a new CI run. A CI pass on a
+PR head was never tied to one base either, so this is no weaker than the per-SHA key.
 """
 import hashlib
 
@@ -41,3 +46,29 @@ def memo(get, put, k, fn, keep=lambda v: True):
 def ci_final(result):
     """linux_ci returns (ok, why). Only a pass is final."""
     return bool(result and result[0])
+
+
+def tree_memo(get, put, kind, head, tree, fn, keep=lambda v: True, note=None):
+    """memo() by head SHA, then by tree SHA. note(v, other_head) -> v marks a tree hit."""
+    hk = key(kind, head)
+    hit = get(hk)
+    if hit is not None:
+        return hit['v']
+    tk = key(kind + '-tree', tree) if tree else None
+    if tk:
+        hit = get(tk)
+        if hit is not None:
+            v = hit['v']
+            return note(v, hit.get('head', '')) if note else v
+    v = fn()
+    if keep(v):
+        put(hk, {'v': v})
+        if tk:
+            put(tk, {'v': v, 'head': head})
+    return v
+
+
+def ci_tree_note(result, other):
+    """linux_ci's (ok, why) marked as reused from another commit with the same tree."""
+    ok, why = result
+    return ok, f"{why} (same tree as tested commit {other[:8]})"
