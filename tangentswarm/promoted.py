@@ -19,7 +19,9 @@ it retries every RETRY seconds) and:
      The reads are one GraphQL query for the Staging PRs. The card moves and an hr-gate
      PASS line is written. This repeats until Human Review is full.
   2. Only if Human Review is still short and a Staging PR is left (stacked, or no gate
-     pass): pending-promote --apply, still under the lock. With SWARM_PROMOTE_PULL=1,
+     pass): pending-promote --apply, still under the lock. It runs ONCE per leftover
+     (PR, head), then again only after BACKSTOP seconds; a blocked head is re-gated by its
+     own event (the CI hook), not by a poll. With SWARM_PROMOTE_PULL=1,
      a full swarm-flow step every time instead, which also pulls one Ready PR.
 
     swarm-promoted                  run the daemon
@@ -41,6 +43,7 @@ POLL = int(os.environ.get('SWARM_PROMOTE_POLL', '30'))
 RETRY = int(os.environ.get('SWARM_PROMOTE_RETRY', '5'))
 PULL = os.environ.get('SWARM_PROMOTE_PULL') == '1'  # also run the Staging pull
 REPO = 'tangentcode/platform'
+BACKSTOP = int(os.environ.get('SWARM_PROMOTE_BACKSTOP', '900'))  # retry a leftover head at most this often
 HR_TARGET = int(os.environ.get('SWARM_PROMOTE_HR_TARGET', '2'))  # only raise it for a dry-run proof
 
 LEAN_Q = """query($c:String){organization(login:"tangentcode"){projectV2(number:4){items(first:100, after:$c){
@@ -163,6 +166,20 @@ class Promoter:
         import runpy
         self.g = g if g is not None else runpy.run_path(str(BIN / 'hr-gate'), run_name='swarm_promoted')
         self.dry = dry_run
+        self.left = []    # [(n, head, why)] Staging PRs the last fast path did not move
+        self.tried = {}   # {(n, head): time} the slow path last ran for this leftover head
+
+    def slow_due(self, now=None):
+        """True if a leftover Staging head has not had the slow path yet, or not for BACKSTOP
+        seconds. A blocked head is re-gated by its own event (the CI hook), so re-running the
+        4-minute pending-promote for it on every poll only holds the lock against that event."""
+        now = time.time() if now is None else now
+        return any(now - self.tried.get((n, h), -BACKSTOP) >= BACKSTOP for n, h, _ in self.left)
+
+    def mark_tried(self, now=None):
+        now = time.time() if now is None else now
+        for n, h, _ in self.left:
+            self.tried[(n, h)] = now
 
     def log_text(self):
         try:
@@ -205,7 +222,7 @@ class Promoter:
             return []
         details = read_details(self.g['gql'], [p['number'] for p in staging])
         gated = gate_times(self.log_text())
-        moved = []
+        moved, self.left = [], []
         with self.g['ScratchRepo']() as scratch:
             main = None
 
@@ -224,6 +241,7 @@ class Promoter:
                 why = self.cheap_check(p, details.get(n), gated, merge)
                 if why:
                     say(f"#{n} stays in Staging: {why}")
+                    self.left.append((n, head, why))
                     continue
                 if self.dry:
                     say(f"would move #{n} Staging -> Human Review (cheap check passed at {head[:8]})")
@@ -262,8 +280,14 @@ class Promoter:
                 cols = read_columns(self.g['gql'])  # fresh, under the lock
                 moved = self.fast_path(cols) if needs_promotion(cols) else []
                 hr = len(cols.get(board.HUMAN_REVIEW, [])) + len(moved)
-                if PULL or (hr < HR_TARGET and len(cols.get(board.STAGING, [])) > len(moved)):
+                if PULL:
                     self.slow_path()
+                elif hr < HR_TARGET and self.slow_due():
+                    self.mark_tried()
+                    self.slow_path()
+                elif hr < HR_TARGET and self.left:
+                    say('slow path already ran for ' + ', '.join(f'#{n} at {h[:8]}' for n, h, _ in self.left)
+                        + f'; waiting for a new head or gate event (backstop {BACKSTOP}s)')
         except gatelock.Busy as e:
             say(f"busy: {e}; retrying in {RETRY}s")
             return 'busy'

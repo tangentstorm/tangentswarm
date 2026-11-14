@@ -166,7 +166,12 @@ def test_once_runs_fast_then_slow_under_the_lock(tmp_path, monkeypatch):
     g['gql'] = lambda q, c=None: page(item(1, HR, 'a'), item(5, ST, H5))
     p = P.Promoter(g=g)
     moved = []
-    monkeypatch.setattr(p, 'fast_path', lambda cols: order.append('fast') or list(moved))
+
+    def fast(cols):
+        order.append('fast')
+        p.left = [] if moved else [(5, H5, 'no gate pass')]
+        return list(moved)
+    monkeypatch.setattr(p, 'fast_path', fast)
     monkeypatch.setattr(p, 'slow_path', lambda: order.append('slow'))
 
     class L:
@@ -217,3 +222,31 @@ def test_slow_path_promotes_only_unless_pull_is_on(tmp_path, monkeypatch):
     monkeypatch.setattr(P, 'PULL', True)
     p.slow_path()
     assert calls == ['promote', 'step']
+
+
+def test_slow_path_runs_once_per_leftover_head_then_waits_for_the_backstop(tmp_path):
+    p = P.Promoter(g=G(tmp_path))
+    p.left = [(5, H5, 'head has no gate pass')]
+    assert p.slow_due(now=1000)
+    p.mark_tried(now=1000)
+    assert not p.slow_due(now=1000 + P.BACKSTOP - 1)
+    assert p.slow_due(now=1000 + P.BACKSTOP)
+    p.left = [(5, 'f' * 40, 'head has no gate pass')]  # a new head runs at once
+    assert p.slow_due(now=1001)
+
+
+def test_once_does_not_rerun_the_slow_path_for_the_same_blocked_head(tmp_path, monkeypatch):
+    g = G(tmp_path)
+    g['gql'] = lambda q, c=None: page(item(1, HR, 'a'), item(5, ST, H5))
+    p = P.Promoter(g=g)
+    slow = []
+
+    def fast(cols):
+        p.left = [(5, H5, 'head has no gate pass')]
+        return []
+    monkeypatch.setattr(p, 'fast_path', fast)
+    monkeypatch.setattr(p, 'slow_path', lambda: slow.append(1))
+    monkeypatch.setattr(P.gatelock, 'gate_lock', lambda name: P._null())
+    p.once()
+    p.once()
+    assert slow == [1]
