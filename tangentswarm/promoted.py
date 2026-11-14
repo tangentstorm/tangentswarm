@@ -7,13 +7,20 @@ merged PR whose card still says Human Review does not. When Human Review holds f
 than 2 and Staging is not empty, it takes the one serial lock (non-blocking; if busy
 it retries every RETRY seconds) and:
 
-  1. Fast path: the head of the Staging queue was already gated at its current head
-     commit (an hr-gate "apply" PASS or PENDING line with no failed condition) and is
-     not a stacked PR. Move its card to Human Review FIRST, and write the hr-gate PASS
-     line for that head.
-  2. Then the slow work, still under the lock: pending-promote --apply if Human Review
-     is still short. With SWARM_PROMOTE_PULL=1, a full swarm-flow step instead, which
-     also pulls one Ready PR into Staging.
+  1. Fast path, a CHEAP check only (the full checks ran when the PR entered Staging).
+     Staging PRs go fast-track first, then in hr-gate's queue order. One may move to
+     Human Review when:
+       - hr-gate's latest apply line for its current head is PASS or PENDING with no
+         failed condition (the head did not change since the gate),
+       - it is open, not a draft, and not stacked (base main, no stacked banner),
+       - no person (a User, not a bot or app) commented or reviewed after that gate,
+       - it merges cleanly with main, and with main plus each Human Review head
+         (local merge-tree, no API call).
+     The reads are one GraphQL query for the Staging PRs. The card moves and an hr-gate
+     PASS line is written. This repeats until Human Review is full.
+  2. Only if Human Review is still short and a Staging PR is left (stacked, or no gate
+     pass): pending-promote --apply, still under the lock. With SWARM_PROMOTE_PULL=1,
+     a full swarm-flow step every time instead, which also pulls one Ready PR.
 
     swarm-promoted                  run the daemon
     swarm-promoted --once [--dry-run]   one check (and promotion) and exit
@@ -23,6 +30,7 @@ import os
 import signal
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from . import board, gatelock
@@ -66,23 +74,88 @@ def needs_promotion(cols):
     return len(cols.get(board.HUMAN_REVIEW, [])) < HR_TARGET and bool(cols.get(board.STAGING))
 
 
-def gated_heads(log_text):
-    """{(#n, head8)} that hr-gate let into Staging or Human Review with no failed condition."""
-    out = set()
+def _when(text):
+    try:
+        t = datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+    return t if t.tzinfo else None
+
+
+def gate_times(log_text):
+    """{(#n, head8): time} for heads whose LATEST hr-gate apply line is PASS or PENDING with
+    no failed condition. A later BLOCKED or RELAY line at the same head cancels the pass."""
+    last = {}
     for line in log_text.splitlines():
         p = line.split('\t')
-        if len(p) > 5 and p[1] == 'apply' and p[4] in ('PASS', 'PENDING') and p[5] == 'fail=-':
-            out.add((p[2], p[3]))
-    return out
+        if len(p) > 5 and p[1] == 'apply':
+            last[(p[2], p[3])] = (p[4] in ('PASS', 'PENDING') and p[5] == 'fail=-', _when(p[0]))
+    return {k: t for k, (ok, t) in last.items() if ok and t is not None}
+
+
+def gated_heads(log_text):
+    return set(gate_times(log_text))
+
+
+DETAIL_FIELDS = """number state headRefOid isDraft baseRefName body
+ labels(first:20){nodes{name}} closingIssuesReferences(first:10){nodes{labels(first:20){nodes{name}}}}
+ comments(last:30){nodes{createdAt author{__typename login}}}
+ reviews(last:30){nodes{submittedAt author{__typename login}}}"""
+
+
+def read_details(gql, numbers):
+    """{n: PR fields} for a few PRs in ONE GraphQL query (no REST)."""
+    if not numbers:
+        return {}
+    owner, name = REPO.split('/')
+    parts = ' '.join(f'p{n}: pullRequest(number:{int(n)}){{{DETAIL_FIELDS}}}' for n in numbers)
+    data = gql(f'query{{repository(owner:"{owner}",name:"{name}"){{{parts}}}}}')['repository']
+    return {int(k[1:]): v for k, v in data.items() if v}
+
+
+def human_after(pr, since):
+    """Logins of people (not bots or apps) who commented or reviewed after `since`."""
+    who = []
+    for kind, key in (('comments', 'createdAt'), ('reviews', 'submittedAt')):
+        for c in (pr.get(kind) or {}).get('nodes') or []:
+            a, t = c.get('author') or {}, _when(c.get(key) or '')
+            if a.get('__typename') == 'User' and t is not None and t > since:
+                who.append(a.get('login') or '?')
+    return who
+
+
+def pr_labels(pr):
+    names = [l['name'] for l in (pr.get('labels') or {}).get('nodes') or []]
+    for iss in (pr.get('closingIssuesReferences') or {}).get('nodes') or []:
+        names += [l['name'] for l in (iss.get('labels') or {}).get('nodes') or []]
+    return names
+
+
+def staging_order(staging, details, queue):
+    """Fast-track first, then hr-gate's queue file order, then the lowest number."""
+    pos = {r['pr']: i for i, r in enumerate(queue)}
+    def key(p):
+        ft = board.is_fast_track(pr_labels(details.get(p['number'], {})))
+        return (0 if ft else 1, pos.get(p['number'], len(pos)), p['number'])
+    return sorted(staging, key=key)
 
 
 def staging_head(cols, queue):
-    """The Staging PR that goes next: first in hr-gate's queue order, else the lowest number."""
-    staging = {p['number']: p for p in cols.get(board.STAGING, [])}
-    for n in [r['pr'] for r in queue]:
-        if n in staging:
-            return staging[n]
-    return staging[min(staging)] if staging else None
+    """The Staging PR that goes next by queue order alone (no labels read)."""
+    order = staging_order(cols.get(board.STAGING, []), {}, queue)
+    return order[0] if order else None
+
+
+def merge_problem(merge_commit, scratch, main, hr, head):
+    """None if head merges cleanly onto main, and onto main plus each Human Review head
+    (pairwise, like hr-gate's condition 9). Else a short reason. Local merge-tree only."""
+    if merge_commit(scratch, main, head, 'probe main') is None:
+        return 'conflicts with main'
+    for n, sha in hr:
+        base = merge_commit(scratch, main, sha, f'main + #{n}')
+        if base is not None and merge_commit(scratch, base, head, 'probe') is None:
+            return f'conflicts with #{n} in Human Review'
+    return None
 
 
 class Promoter:
@@ -97,29 +170,70 @@ class Promoter:
         except OSError:
             return ''
 
-    def fast_path(self, cols):
-        """Move the gated Staging head to Human Review. Returns the PR number or None."""
-        p = staging_head(cols, self.g['queue_from_board_or_file']())
-        if p is None:
-            return None
+    def queue(self):
+        try:
+            return self.g['read_queue_file']()
+        except Exception:
+            return []
+
+    def cheap_check(self, p, d, gated, merge):
+        """None if PR p may move to Human Review now, else the reason it may not.
+        The full checks ran when it entered Staging; here only what can change since."""
         n, head = p['number'], p['head']
-        if (f"#{n}", head[:8]) not in gated_heads(self.log_text()):
-            say(f"#{n} is the Staging head but its head {head[:8]} has no gate pass: slow path")
-            return None
-        full = self.g['fetch'](n, refresh=True)
-        if full['headRefOid'] != head or full.get('isDraft'):
-            say(f"#{n} changed (head {full['headRefOid'][:8]}, draft={full.get('isDraft')}): slow path")
-            return None
-        if self.g['stacked_base'](full.get('body') or ''):
-            say(f"#{n} is a stacked PR: slow path (pending-promote decides)")
-            return None
-        if self.dry:
-            say(f"would move #{n} Staging -> Human Review (gated at {head[:8]})")
-            return n
-        self.g['move'](p['item'], board.HUMAN_REVIEW)
-        self.g['log']('apply', n, head[:8], 'PASS', [])
-        say(f"moved #{n} Staging -> Human Review (fast path, gated at {head[:8]})")
-        return n
+        t = gated.get((f'#{n}', head[:8]))
+        if t is None:
+            return f'head {head[:8]} has no gate pass'
+        if not d or d.get('state') != 'OPEN':
+            return 'not open'
+        if d['headRefOid'] != head:
+            return f"head moved to {d['headRefOid'][:8]}"
+        if d.get('isDraft'):
+            return 'is a draft'
+        if d.get('baseRefName') != 'main' or self.g['stacked_base'](d.get('body') or ''):
+            return 'is stacked (pending-promote decides)'
+        who = human_after(d, t)
+        if who:
+            return f"human comment after the gate ({', '.join(sorted(set(who)))})"
+        return merge(head)
+
+    def fast_path(self, cols):
+        """Fill Human Review from Staging with the cheap check only. Returns the moved PRs."""
+        from . import flow
+        hr = list(cols.get(board.HUMAN_REVIEW, []))
+        staging = cols.get(board.STAGING, [])
+        if len(hr) >= HR_TARGET or not staging:
+            return []
+        details = read_details(self.g['gql'], [p['number'] for p in staging])
+        gated = gate_times(self.log_text())
+        moved = []
+        with self.g['ScratchRepo']() as scratch:
+            main = None
+
+            def merge(head):
+                nonlocal main
+                if main is None:
+                    main = scratch.ensure_main()
+                scratch.ensure(head, *[q['head'] for q in hr])
+                return merge_problem(flow.merge_commit, scratch, main,
+                                     [(q['number'], q['head']) for q in hr], head)
+
+            for p in staging_order(staging, details, self.queue()):
+                if len(hr) >= HR_TARGET:
+                    break
+                n, head = p['number'], p['head']
+                why = self.cheap_check(p, details.get(n), gated, merge)
+                if why:
+                    say(f"#{n} stays in Staging: {why}")
+                    continue
+                if self.dry:
+                    say(f"would move #{n} Staging -> Human Review (cheap check passed at {head[:8]})")
+                else:
+                    self.g['move'](p['item'], board.HUMAN_REVIEW)
+                    self.g['log']('apply', n, head[:8], 'PASS', [])
+                    say(f"moved #{n} Staging -> Human Review (cheap check passed at {head[:8]})")
+                hr.append(p)
+                moved.append(n)
+        return moved
 
     def slow_path(self):
         """After the fast move: pending-promote if Human Review is still short. With
@@ -146,9 +260,10 @@ class Promoter:
         try:
             with (gatelock.gate_lock('swarm-promoted') if not self.dry else _null()):
                 cols = read_columns(self.g['gql'])  # fresh, under the lock
-                if needs_promotion(cols):
-                    self.fast_path(cols)
-                self.slow_path()
+                moved = self.fast_path(cols) if needs_promotion(cols) else []
+                hr = len(cols.get(board.HUMAN_REVIEW, [])) + len(moved)
+                if PULL or (hr < HR_TARGET and len(cols.get(board.STAGING, [])) > len(moved)):
+                    self.slow_path()
         except gatelock.Busy as e:
             say(f"busy: {e}; retrying in {RETRY}s")
             return 'busy'
