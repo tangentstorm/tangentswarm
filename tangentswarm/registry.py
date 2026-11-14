@@ -39,6 +39,7 @@ class AgentSpec:
     names: frozenset = field(default_factory=frozenset)       # exact process names
     prefixes: tuple = ()         # process-name prefixes (versioned binaries)
     adapter: str = 'none'        # 'full' (prompt detector verified), 'basic' or 'none'
+    env: tuple = ()              # NAME=value pairs injected via /usr/bin/env
 
     def matches(self, name):
         return name in self.names or any(name.startswith(p) for p in self.prefixes)
@@ -48,7 +49,12 @@ REGISTRY = {
     'claude': AgentSpec(
         'claude', ('~/.npm-global/bin/claude', '~/workspace/.npm-global/bin/claude', '~/.local/bin/claude',
                    '~/.claude/local/claude'),
-        names=frozenset({'claude', 'claude.exe'}), adapter='full'),
+        # Dim prompt suggestions show up in capture-pane as typed input and
+        # block tell_agent. The interactive TUI reads this env var and
+        # the user setting promptSuggestionEnabled=false; --prompt-suggestions
+        # is print/SDK-only and does not apply here.
+        names=frozenset({'claude', 'claude.exe'}), adapter='full',
+        env=('CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0',)),
     'muse': AgentSpec(
         # ~/.local/bin/muse is an auto-updating launcher that execs muse-bin-<version>
         'muse', ('~/.local/bin/muse',), flags=('--trust-workspace',),
@@ -87,10 +93,13 @@ def resolve_binary(name):
     return None
 
 
-def _exec_argv(path, flags):
+def _exec_argv(path, flags, env=()):
     # tmux execs a multi-argument command directly but hands a single argument to
-    # `sh -c`; run flag-less agents through env so a shell is never involved.
-    return [path, *flags] if flags else ['/usr/bin/env', '--', path]
+    # `sh -c`; run through env when there are no flags, or when we need to set env,
+    # so a shell is never involved.
+    if env or not flags:
+        return ['/usr/bin/env', *env, '--', path, *flags]
+    return [path, *flags]
 
 
 def launch_argv(name):
@@ -100,7 +109,8 @@ def launch_argv(name):
     path = resolve_binary(name)
     if path is None:
         raise AgentError(f"agent {name!r} is not installed on this host")
-    return _exec_argv(path, REGISTRY[name].flags)
+    spec = REGISTRY[name]
+    return _exec_argv(path, spec.flags, spec.env)
 
 
 def registry_info():
@@ -109,7 +119,7 @@ def registry_info():
     for name, spec in REGISTRY.items():
         path = resolve_binary(name)
         out.append({'name': name, 'installed': path is not None, 'path': path,
-                    'argv': _exec_argv(path, spec.flags) if path else None, 'adapter': spec.adapter})
+                    'argv': _exec_argv(path, spec.flags, spec.env) if path else None, 'adapter': spec.adapter})
     return out
 
 
