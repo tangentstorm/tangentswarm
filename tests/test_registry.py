@@ -63,7 +63,7 @@ def call_tool(name, **kw):
 
 def test_launch_argv_is_fixed(fake_bins):
     assert registry.launch_argv('muse') == [fake_bins['muse'], '--trust-workspace']
-    assert registry.launch_argv('claude') == ['/usr/bin/env', '--', fake_bins['claude']]
+    assert registry.launch_argv('claude') == ['/usr/bin/env', 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0', '--', fake_bins['claude']]
 
 
 def test_unknown_agent_rejected(fake_bins, root):
@@ -138,7 +138,7 @@ def test_start_agent_execs_argv_without_a_shell(fake_bins, root, monkeypatch):
     out = registry.launch_agent('claude', 'proj', session='scratch', run=rec)
     argv = rec.calls[0]
     assert argv[:2] == ['tmux', 'new-session'] and argv[argv.index('-s') + 1] == 'scratch'
-    assert argv[argv.index('--') + 1:] == ['/usr/bin/env', '--', fake_bins['claude']]
+    assert argv[argv.index('--') + 1:] == ['/usr/bin/env', 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0', '--', fake_bins['claude']]
     assert out['window_name'] == 'claude-proj'
 
 
