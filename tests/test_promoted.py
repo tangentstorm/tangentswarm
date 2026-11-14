@@ -20,6 +20,12 @@ def item(n, opt, head, state='OPEN', repo=P.REPO):
 HR, ST = board.OPTION[board.HUMAN_REVIEW], board.OPTION[board.STAGING]
 
 
+@pytest.fixture(autouse=True)
+def own_queue(tmp_path, monkeypatch):
+    monkeypatch.setattr(P.gatelock, 'QUEUE_DIR', tmp_path / 'queue')
+    return tmp_path / 'queue'
+
+
 def test_read_columns_counts_open_prs_by_option_id_only():
     cols = P.read_columns(lambda q, c=None: page(item(1, HR, 'a'), item(2, HR, 'b', state='MERGED'),
                                                  item(5, ST, H5), item(9, ST, 'z', repo='other/repo')))
@@ -274,3 +280,24 @@ def test_main_sha_reads_ls_remote_and_survives_errors(tmp_path):
     assert P.Promoter(g=g).main_sha() == 'c' * 40
     g['sh'] = lambda *a, check=True: subprocess.CompletedProcess(a, 128, '', 'fatal')
     assert P.Promoter(g=g).main_sha() is None
+
+
+def test_once_drains_queued_requests_under_its_lock(tmp_path, monkeypatch, own_queue):
+    g = G(tmp_path)
+    g['gql'] = lambda q, c=None: page(item(1, HR, 'a'), item(2, HR, 'b'))  # nothing else to do
+    p = P.Promoter(g=g)
+    monkeypatch.setattr(p, 'main_sha', lambda: None)
+    order = []
+
+    class L:
+        def __enter__(self):
+            order.append('lock')
+
+        def __exit__(self, *a):
+            order.append('unlock')
+    monkeypatch.setattr(P.gatelock, 'gate_lock', lambda name: L())
+    monkeypatch.setattr(P.gatelock, 'run_held', lambda argv: order.append(argv[-1]) or 0)
+    assert p.once() == 'idle'
+    P.gatelock.enqueue(['/b/hr-gate', '--apply', '9'], qdir=own_queue)
+    assert p.once() == 'promoted' and order == ['lock', '9', 'unlock']
+    assert P.gatelock.queued(own_queue) == []

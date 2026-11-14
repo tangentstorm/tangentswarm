@@ -21,7 +21,9 @@ it retries every RETRY seconds) and:
   2. When main moved (git ls-remote each poll, no API quota): recheck ONLY "merges
      cleanly with main" for each Staging PR left (tangentswarm.mainmerge). A conflict
      goes to In Progress with a merge-main relay; a clean PR is left alone.
-  3. Only if Human Review is still short and a Staging PR is left (stacked, or no gate
+  3. Queued gate requests: a caller that found the serial lock busy queued its command
+     (tangentswarm.gatelock) instead of giving up; the daemon runs each one under the lock.
+  4. Only if Human Review is still short and a Staging PR is left (stacked, or no gate
      pass): pending-promote --apply, still under the lock. It runs ONCE per leftover
      (PR, head), then again only after BACKSTOP seconds; a blocked head is re-gated by its
      own event (the CI hook), not by a poll. With SWARM_PROMOTE_PULL=1,
@@ -182,6 +184,14 @@ class Promoter:
         except Exception:
             return None
 
+    def drain(self):
+        """Run the queued gate requests (tangentswarm.gatelock queue) under our lock."""
+        if self.dry:
+            for _, req in gatelock.queued():
+                say(f"would run queued {' '.join(req.get('argv') or [])}")
+            return []
+        return gatelock.drain(gatelock.run_held, say)
+
     def main_pass(self, cols, moved, main):
         """Main moved: recheck only "merges cleanly with main" for the Staging PRs left."""
         from . import flow, mainmerge
@@ -297,10 +307,13 @@ class Promoter:
         to the lock (the read under the lock is fresh), so a long busy spell costs no reads."""
         main = self.main_sha()
         main_moved = main is not None and main != self.last_main
+        waiting = gatelock.queued()
         if not retry:
             cols = read_columns(self.g['gql'])
-            if not needs_promotion(cols) and not main_moved:
+            if not needs_promotion(cols) and not main_moved and not waiting:
                 return 'idle'
+            if waiting:
+                say(f"{len(waiting)} queued gate request(s): draining")
             hr, st = len(cols.get(board.HUMAN_REVIEW, [])), len(cols.get(board.STAGING, []))
             if needs_promotion(cols):
                 say(f"Human Review {hr}/{HR_TARGET}, Staging {st}: promoting")
@@ -310,12 +323,17 @@ class Promoter:
             with (gatelock.gate_lock('swarm-promoted') if not self.dry else _null()):
                 cols = read_columns(self.g['gql'])  # fresh, under the lock
                 moved = self.fast_path(cols) if needs_promotion(cols) else []
+                drained = self.drain()
+                if drained:  # a queued run may have moved cards: read again before the rest
+                    cols, moved = read_columns(self.g['gql']), []  # the new read already has our moves
                 if main_moved:
                     self.main_pass(cols, moved, main)
                     self.last_main = main
                 hr = len(cols.get(board.HUMAN_REVIEW, [])) + len(moved)
                 if PULL:
                     self.slow_path()
+                elif hr < HR_TARGET and any(a[0].endswith('pending-promote') for a, _ in drained):
+                    self.mark_tried()  # a queued pending-promote just ran: that was the slow path
                 elif hr < HR_TARGET and self.slow_due():
                     self.mark_tried()
                     self.slow_path()

@@ -121,3 +121,25 @@ def test_only_state_changing_runs_want_the_lock():
                        ('pending-promote', ['--fill']), ('pending-promote', ['--dry-run']),
                        ('pending-promote', ['-h', '--apply'])):
         assert not gl.wants_lock(tool, argv), (tool, argv)
+
+
+def test_enqueue_dedupes_and_only_takes_gate_tools(tmp_path):
+    a = gl.enqueue(['/h/bin/hr-gate', '--apply', '5'], by='hook', qdir=tmp_path, now=10)
+    assert gl.enqueue(['/h/bin/hr-gate', '--apply', '5'], qdir=tmp_path, now=20) == a
+    gl.enqueue(['/h/bin/pending-promote', '--apply'], qdir=tmp_path, now=5)
+    assert [r['argv'][-1] for _, r in gl.queued(tmp_path)] == ['--apply', '5']  # oldest first
+    with pytest.raises(ValueError):
+        gl.enqueue(['rm', '-rf', '/'], qdir=tmp_path)
+
+
+def test_drain_runs_oldest_first_and_drops_stale_or_foreign(tmp_path):
+    import json
+    gl.enqueue(['/b/hr-gate', '--apply', '7'], qdir=tmp_path, now=100)
+    gl.enqueue(['/b/pending-promote', '--apply'], qdir=tmp_path, now=50)
+    gl.enqueue(['/b/hr-gate', '--apply', '1'], qdir=tmp_path, now=-5000)  # stale
+    (tmp_path / 'x.json').write_text(json.dumps({'argv': ['/bin/sh', '-c', 'x'], 'at': 100}))
+    ran, said = [], []
+    out = gl.drain(lambda argv: ran.append(argv) or 0, said.append, qdir=tmp_path, now=200, max_age=1800)
+    assert ran == [['/b/pending-promote', '--apply'], ['/b/hr-gate', '--apply', '7']]
+    assert out == [(r, 0) for r in ran] and not list(tmp_path.glob('*.json'))
+    assert any('dropped /b/hr-gate --apply 1' in s for s in said) and any('not for' in s for s in said)
