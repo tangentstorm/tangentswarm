@@ -26,11 +26,16 @@ Only the pulled PR is merged, deployed or gated. No -vN copies, no re-merge of t
     swarm-flow step [--dry-run]     one step; prints did/would lines and notes
     swarm-flow event NAME < JSON    run a step only for a Status change or a merge
     swarm-flow status               the columns, the Ready order and the running pull
+    swarm-flow merge-work N SHA [--label B] [--dry-run]
+                                    merge one tip (such as a -vN) into work and push it, under
+                                    the lock; refused unless the merge is clean (no conflict,
+                                    no conflict marker). Use this, never a hand merge-tree.
 Exit 0 = step done, 75 = busy (another merge/gate step runs), 2 = error.
 """
 import argparse
 import json
 import os
+import re
 import runpy
 import subprocess
 import sys
@@ -135,12 +140,36 @@ def git(scratch, *args, check=True):
     return r
 
 
-def merge_commit(scratch, a, b, msg):
-    """Commit merging b into a, or None on a conflict."""
-    r = git(scratch, 'merge-tree', '--write-tree', '--no-messages', a, b, check=False)
-    if r.returncode:
+MARKER_RE = re.compile(r'^\+(<{7}|>{7})( |$)', re.M)
+
+
+def merge_problem_text(rc, out, diff):
+    """Why a merge-tree result must not be committed, or None. git merge-tree --write-tree
+    prints a tree SHA even on a conflict, and that tree holds <<<<<<< markers: work commit
+    0d249b69 (#447) was made from such a tree. So refuse on a non-zero exit, on any CONFLICT
+    line, and on any conflict marker the merge adds (diff: git diff a..tree)."""
+    if rc:
+        return f"merge-tree exit {rc} (conflict)"
+    bad = [l for l in out.splitlines() if l.startswith('CONFLICT')]
+    if bad:
+        return bad[0][:160]
+    m = MARKER_RE.search(diff or '')
+    if m:
+        return f"the merged tree adds a conflict marker ({m.group(1)})"
+    return None
+
+
+def merge_commit(scratch, a, b, msg, why=None):
+    """Commit merging b into a, or None if the merge is not clean (merge_problem_text).
+    why: a list that gets the reason on a refusal."""
+    r = git(scratch, 'merge-tree', '--write-tree', '--messages', a, b, check=False)
+    tree = (r.stdout.split() or [''])[0]
+    diff = git(scratch, 'diff', a, tree, check=False).stdout if r.returncode == 0 and tree else ''
+    bad = merge_problem_text(r.returncode, r.stdout, diff)
+    if bad:
+        if why is not None:
+            why.append(bad)
         return None
-    tree = r.stdout.split()[0]
     return git(scratch, 'commit-tree', tree, '-p', a, '-p', b, '-m', msg).stdout.strip()
 
 
@@ -250,23 +279,46 @@ class Flow:
         pos = {n: i for i, n in enumerate(order)}
         return sorted(staging, key=lambda p: (pos.get(p['number'], len(pos)), p['number']))
 
-    def start_pull(self, p, scratch):
-        n, head = p['number'], p['head']
+    def merge_into_work(self, scratch, n, tip, label):
+        """Merge tip into origin work and push it (a fast-forward; never with --dry-run).
+        Returns (work commit, None), (work commit, 'already in work') or (None, why). The merge is refused unless it is clean
+        (merge_problem_text): a conflict never reaches work."""
         git(scratch, 'fetch', '--no-tags', '--quiet', self.g['origin_url'](), f'{WORK}:refs/heads/{WORK}')
         work = git(scratch, 'rev-parse', f'refs/heads/{WORK}').stdout.strip()
-        if git(scratch, 'merge-base', '--is-ancestor', head, work, check=False).returncode == 0:
-            merged = work
-        else:
-            merged = merge_commit(scratch, work, head, f"Merge #{n} ({p['branch']}) into {WORK} for Staging\n\n"
-                                                        f"swarm-flow pull step, head {head}.")
-            if merged is None:
-                self.note(f"#{n} conflicts with {WORK}: the work branch needs a manual merge (pull not started)")
-                return
-            if not self.dry:
-                git(scratch, 'push', '--quiet', self.g['origin_url'](), f'{merged}:refs/heads/{WORK}')
+        if git(scratch, 'merge-base', '--is-ancestor', tip, work, check=False).returncode == 0:
+            return work, 'already in work'
+        why = []
+        merged = merge_commit(scratch, work, tip, f"Merge #{n} ({label}) into {WORK} for Staging\n\n"
+                                                  f"swarm-flow, tip {tip}.", why=why)
+        if merged is None:
+            return None, f"{label} {tip[:8]} does not merge cleanly into {WORK} {work[:8]}: {why[0]}"
+        if not self.dry:
+            git(scratch, 'push', '--quiet', self.g['origin_url'](), f'{merged}:refs/heads/{WORK}')
+        return merged, None
+
+    def start_pull(self, p, scratch):
+        n, head = p['number'], p['head']
+        merged, why = self.merge_into_work(scratch, n, head, p['branch'])
+        if merged is None:
+            self.note(f"#{n} refused, work NOT pushed: {why}")
+            return
         if not self.dry:
             save_pull(dict(pr=n, head=head, branch=p['branch'], item=p['item'], work=merged, started=self.now()))
         self.change(f"#{n} pulled: merged head {head[:8]} into {WORK} ({merged[:8]}); staging redeploys")
+
+    def merge_work(self, n, tip, label):
+        """swarm-flow merge-work: the one safe staging merge for a hand step (a -vN tip)."""
+        with self.g['ScratchRepo']() as scratch:
+            scratch.ensure(tip)
+            merged, why = self.merge_into_work(scratch, n, tip, label)
+        if merged is None:
+            self.out(f"refused: {why}. {WORK} is unchanged.")
+            return 1
+        if why:
+            self.out(f"#{n} {label} {tip[:8]} is already in {WORK} {merged[:8]}: nothing to push")
+            return 0
+        self.out(f"{'would push' if self.dry else 'pushed'} {WORK} {merged[:8]}: #{n} {label} {tip[:8]}")
+        return 0
 
     # -- 3. advance -----------------------------------------------------------
     def advance(self, d, prs, scratch):
@@ -355,13 +407,22 @@ class Flow:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='swarm-flow', description=__doc__.split('\n', 1)[0])
-    ap.add_argument('cmd', choices=['step', 'event', 'status'])
-    ap.add_argument('name', nargs='?', help='webhook event name (event)')
+    ap.add_argument('cmd', choices=['step', 'event', 'status', 'merge-work'])
+    ap.add_argument('name', nargs='?', help='webhook event name (event); PR number (merge-work)')
+    ap.add_argument('tip', nargs='?', help='merge-work: the commit to merge into work (a -vN tip)')
+    ap.add_argument('--label', default='', help='merge-work: branch name for the message')
     ap.add_argument('--dry-run', action='store_true')
     a = ap.parse_args(argv)
     try:
         if a.cmd == 'status':
             return Flow().status()
+        if a.cmd == 'merge-work':
+            if not (a.name or '').isdigit() or not a.tip:
+                ap.error('merge-work needs a PR number and a tip commit')
+            if a.dry_run:
+                return Flow(dry_run=True).merge_work(int(a.name), a.tip, a.label or 'tip')
+            with gatelock.gate_lock(f'swarm-flow merge-work #{a.name}'):
+                return Flow().merge_work(int(a.name), a.tip, a.label or 'tip')
         if a.cmd == 'event':
             payload = json.load(sys.stdin)
             if not event_wants_step(a.name or '', payload):

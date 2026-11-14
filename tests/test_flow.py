@@ -87,7 +87,59 @@ def test_merge_commit_has_both_parents(repo):
     c = flow.merge_commit(s, h['x'], h['z'], 'm')
     parents = run(s.dir, 'log', '-1', '--format=%P', c).split()
     assert parents == [h['x'], h['z']]
-    assert flow.merge_commit(s, h['x'], h['y'], 'm') is None
+    why = []
+    assert flow.merge_commit(s, h['x'], h['y'], 'm', why=why) is None
+    assert why and 'conflict' in why[0].lower()
+
+
+def test_merge_problem_text_reads_exit_conflict_lines_and_markers():
+    assert flow.merge_problem_text(1, 'abc\n', '') == 'merge-tree exit 1 (conflict)'
+    assert flow.merge_problem_text(0, 'abc\nCONFLICT (content): Merge conflict in a.txt\n', '').startswith('CONFLICT')
+    assert 'marker' in flow.merge_problem_text(0, 'abc\n', '+ok\n+<<<<<<< origin/work\n')
+    assert flow.merge_problem_text(0, 'abc\n', '+a line that names <<<<<<< in text\n') is None
+    assert flow.merge_problem_text(0, 'abc\n', '+fine\n') is None
+
+
+def test_a_clean_merge_that_adds_conflict_markers_is_refused(repo):
+    """Like work 0d249b69: a tip that carries committed <<<<<<< markers."""
+    s, h = repo
+    w = s.dir[:-len('/.git')]
+    run(w, 'checkout', '-q', '-b', 'bad', h['main'])
+    with open(f'{w}/d.txt', 'w') as f:
+        f.write('<<<<<<< origin/work\nA\n=======\nB\n>>>>>>> tip\n')
+    run(w, 'add', '.')
+    run(w, 'commit', '-qm', 'bad')
+    why = []
+    assert flow.merge_commit(s, h['z'], run(w, 'rev-parse', 'HEAD'), 'm', why=why) is None
+    assert 'conflict marker' in why[0]
+
+
+def test_merge_work_refuses_a_conflict_and_leaves_work_alone(repo, tmp_path):
+    s, h = repo
+    origin = tmp_path / 'origin.git'
+    run(tmp_path, 'init', '-q', '--bare', str(origin))
+    run(s.dir, 'push', '-q', str(origin), f"{h['x']}:refs/heads/work")
+    out = []
+    g = {'origin_url': lambda: str(origin), 'ScratchRepo': lambda: _Ctx(s)}
+    f = flow.Flow(out=out.append, g=g)
+    s.ensure = lambda *a: None
+    assert f.merge_work(447, h['y'], 'y-v2') == 1
+    assert out[0].startswith('refused: y-v2') and 'work is unchanged' in out[0]
+    assert run(s.dir, 'ls-remote', str(origin), 'refs/heads/work').split()[0] == h['x']
+    out.clear()
+    assert f.merge_work(447, h['z'], 'z') == 0 and out[0].startswith('pushed work')
+    assert run(s.dir, 'ls-remote', str(origin), 'refs/heads/work').split()[0] != h['x']
+
+
+class _Ctx:
+    def __init__(self, s):
+        self.s = s
+
+    def __enter__(self):
+        return self.s
+
+    def __exit__(self, *a):
+        return False
 
 
 # --- the step with a fake hr-gate -------------------------------------------------
@@ -277,3 +329,14 @@ def test_step_without_promote_never_runs_pending_promote(monkeypatch):
     f.step(promote=False)
     f.step()
     assert calls == ['pull', 'promote', 'pull']
+
+
+def test_merge_work_says_when_the_tip_is_already_in_work(repo, tmp_path):
+    s, h = repo
+    origin = tmp_path / 'origin.git'
+    run(tmp_path, 'init', '-q', '--bare', str(origin))
+    run(s.dir, 'push', '-q', str(origin), f"{h['x']}:refs/heads/work")
+    out = []
+    s.ensure = lambda *a: None
+    f = flow.Flow(out=out.append, g={'origin_url': lambda: str(origin), 'ScratchRepo': lambda: _Ctx(s)})
+    assert f.merge_work(447, h['main'], 'main') == 0 and 'already in work' in out[0]
