@@ -14,4 +14,6 @@ def isolated_state(tmp_path, monkeypatch):
     for var in list(os.environ):
         if var.startswith(('TANGENTSWARM_AUTH_', 'TANGENTSWARM_API_KEY', 'TANGENTSWARM_AGENT_')):
             monkeypatch.delenv(var, raising=False)
+    from tangentswarm import board
+    monkeypatch.setattr(board, 'FT_STATE', tmp_path / 'swarm-fasttrack.json')
     yield tmp_path

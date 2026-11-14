@@ -57,28 +57,53 @@ HR_TARGET = int(os.environ.get('SWARM_PROMOTE_HR_TARGET', '2'))  # only raise it
 LEAN_Q = """query($c:String){organization(login:"tangentcode"){projectV2(number:4){items(first:100, after:$c){
  pageInfo{hasNextPage endCursor}
  nodes{id fieldValueByName(name:"Status"){...on ProjectV2ItemFieldSingleSelectValue{name optionId}}
-  content{__typename ...on PullRequest{number state headRefOid repository{nameWithOwner}}}}}}}}"""
+  content{__typename ...on PullRequest{number state headRefOid repository{nameWithOwner}
+   labels(first:20){nodes{name}} closingIssuesReferences(first:10){nodes{number labels(first:20){nodes{name}}}}}
+   ...on Issue{number state repository{nameWithOwner} labels(first:20){nodes{name}}}}}}}}}"""
 
 
 def say(line):
     print(time.strftime('%H:%M:%S ') + line, flush=True)
 
 
-def read_columns(gql):
-    """{column key: [{number, head, item}]} for OPEN platform PRs, by option id."""
-    cols, cursor = {}, None
+def _names(node):
+    return [l['name'] for l in ((node or {}).get('labels') or {}).get('nodes') or []]
+
+
+def read_board(gql):
+    """({column key: [{number, head, item}]} for OPEN platform PRs by option id,
+    [fast-track items for board.update_active])."""
+    cols, ft, cursor = {}, [], None
     while True:
         data = gql(LEAN_Q, c=cursor)['organization']['projectV2']['items']
         for it in data['nodes']:
             c = it.get('content') or {}
-            if (c.get('__typename') != 'PullRequest' or c.get('state') != 'OPEN'
-                    or (c.get('repository') or {}).get('nameWithOwner') != REPO):
+            kind = c.get('__typename')
+            if kind not in ('PullRequest', 'Issue') or (c.get('repository') or {}).get('nameWithOwner') != REPO:
                 continue
-            cols.setdefault(board.column(it.get('fieldValueByName')), []).append(
-                dict(number=c['number'], head=c['headRefOid'], item=it['id']))
+            col = board.column(it.get('fieldValueByName'))
+            closes = [dict(number=i['number'], labels=_names(i))
+                      for i in ((c.get('closingIssuesReferences') or {}).get('nodes') or [])]
+            ft.append(dict(number=c['number'], kind=kind, state=c.get('state'), col=col,
+                           labels=_names(c), closes=closes))
+            if kind == 'PullRequest' and c.get('state') == 'OPEN':
+                cols.setdefault(col, []).append(dict(number=c['number'], head=c['headRefOid'], item=it['id'],
+                                                     closes=[i['number'] for i in closes]))
         if not data['pageInfo']['hasNextPage']:
-            return cols
+            return cols, ft
         cursor = data['pageInfo']['endCursor']
+
+
+def read_columns(gql, ft_state=None):
+    """Columns as read_board, and keep the ONE active fast-track ticket current (board.FT_STATE)."""
+    cols, ft = read_board(gql)
+    try:
+        act, prev = board.update_active(ft, ft_state)
+        if act != prev:
+            say(f"active fast-track: {'#' + str(act) if act else 'none'} (was {'#' + str(prev) if prev else 'none'})")
+    except OSError as e:
+        say(f"fast-track state not saved: {e}")
+    return cols
 
 
 def needs_pull(cols, running):
@@ -117,7 +142,7 @@ def gated_heads(log_text):
 
 
 DETAIL_FIELDS = """number state headRefOid headRefName isDraft baseRefName body
- labels(first:20){nodes{name}} closingIssuesReferences(first:10){nodes{labels(first:20){nodes{name}}}}
+ labels(first:20){nodes{name}} closingIssuesReferences(first:10){nodes{number labels(first:20){nodes{name}}}}
  comments(last:30){nodes{createdAt author{__typename login}}}
  reviews(last:30){nodes{submittedAt author{__typename login}}}"""
 
@@ -150,11 +175,15 @@ def pr_labels(pr):
     return names
 
 
-def staging_order(staging, details, queue):
-    """Fast-track first, then hr-gate's queue file order, then the lowest number."""
+def staging_order(staging, details, queue, active=None):
+    """The ONE active fast-track first, then hr-gate's queue file order, then the lowest number."""
     pos = {r['pr']: i for i, r in enumerate(queue)}
     def key(p):
-        ft = board.is_fast_track(pr_labels(details.get(p['number'], {})))
+        closes = p.get('closes')
+        if closes is None:
+            closes = [i.get('number') for i in ((details.get(p['number'], {}).get('closingIssuesReferences') or {})
+                                                 .get('nodes') or [])]
+        ft = board.is_active_fast_track(p['number'], closes, active)
         return (0 if ft else 1, pos.get(p['number'], len(pos)), p['number'])
     return sorted(staging, key=key)
 
@@ -281,7 +310,7 @@ class Promoter:
                 return merge_problem(flow.merge_commit, scratch, main,
                                      [(q['number'], q['head']) for q in hr], head)
 
-            for p in staging_order(staging, details, self.queue()):
+            for p in staging_order(staging, details, self.queue(), board.active_fast_track()):
                 if len(hr) >= HR_TARGET:
                     break
                 n, head = p['number'], p['head']

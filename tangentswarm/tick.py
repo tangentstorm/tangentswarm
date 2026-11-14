@@ -388,11 +388,12 @@ BOARD_Q = """query($c:String){organization(login:"tangentcode"){projectV2(number
   content{__typename
    ...on PullRequest{number state isDraft headRefName headRefOid title repository{nameWithOwner}
      body milestone{title} labels(first:20){nodes{name}}
-     closingIssuesReferences(first:10){nodes{milestone{title} labels(first:20){nodes{name}}}}}}}}}}}"""
+     closingIssuesReferences(first:10){nodes{number milestone{title} labels(first:20){nodes{name}}}}}}}}}}}"""
 
 
 def board_prs(g):
     out, cursor = {}, None
+    active = board.active_fast_track()  # the ONE active fast-track ticket (kept by swarm-promoted)
     while True:
         data = g['gql'](BOARD_Q, c=cursor)['organization']['projectV2']['items']
         for it in data['nodes']:
@@ -409,7 +410,10 @@ def board_prs(g):
                                     branch=c['headRefName'], head=c['headRefOid'], title=c['title'],
                                     body=c.get('body') or '',
                                     col=col, item=it['id'],
-                                    rank=board.priority_rank(board.is_fast_track(labels | issue_labels),
+                                    rank=board.priority_rank(
+                                        board.is_active_fast_track(
+                                            c['number'], [i.get('number') for i in c['closingIssuesReferences']['nodes']],
+                                            active),
                                                              milestone_rank(miles) == 0),
                                     parked=c['number'] in g['PARKED'] | EXTRA_PARKED or 'parked' in labels)
         if not data['pageInfo']['hasNextPage']:

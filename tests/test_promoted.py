@@ -57,10 +57,22 @@ def test_staging_head_follows_queue_order():
     assert P.staging_head(cols, [])['number'] == 5
 
 
-def test_staging_order_puts_fast_track_first():
-    st = [dict(number=5), dict(number=6)]
-    det = {6: {'closingIssuesReferences': {'nodes': [{'labels': {'nodes': [{'name': 'fast-track'}]}}]}}}
-    assert [p['number'] for p in P.staging_order(st, det, [{'pr': 5}, {'pr': 6}])] == [6, 5]
+def test_staging_order_puts_only_the_active_fast_track_first():
+    st = [dict(number=5), dict(number=6), dict(number=7, closes=[488])]
+    det = {6: {'closingIssuesReferences': {'nodes': [{'number': 490}]}}}
+    q = [{'pr': 5}, {'pr': 6}, {'pr': 7}]
+    assert [p['number'] for p in P.staging_order(st, det, q, active=490)] == [6, 5, 7]
+    assert [p['number'] for p in P.staging_order(st, det, q, active=488)] == [7, 5, 6]
+    assert [p['number'] for p in P.staging_order(st, det, q, active=None)] == [5, 6, 7]
+
+
+def test_read_columns_keeps_the_active_fast_track_current(tmp_path):
+    from tangentswarm import board as B
+    issue = {'id': 'X', 'fieldValueByName': {'optionId': B.OPTION[B.ACTIVE]},
+             'content': {'__typename': 'Issue', 'number': 488, 'state': 'OPEN',
+                         'repository': {'nameWithOwner': P.REPO}, 'labels': {'nodes': [{'name': 'fast-track'}]}}}
+    P.read_columns(lambda q, c=None: page(item(5, ST, H5), issue))
+    assert B.active_fast_track() == 488
 
 
 def note(kind, who, typ, when):
