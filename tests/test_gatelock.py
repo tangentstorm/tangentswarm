@@ -110,3 +110,14 @@ def test_release_removes_our_holder_note(lock):
     with gl.gate_lock('swarm-promoted', env={}):
         assert 'swarm-promoted' in gl.holder()
     assert not gl.holder_path().exists() and gl.holder() == 'unknown holder'
+
+
+def test_only_state_changing_runs_want_the_lock():
+    assert gl.wants_lock('hr-gate', ['--apply', '470'])
+    assert gl.wants_lock('hr-gate', ['--sweep', '--demote'])
+    assert gl.wants_lock('pending-promote', ['--apply', '--fill'])
+    for tool, argv in (('hr-gate', ['--sweep']), ('hr-gate', ['470']), ('hr-gate', ['--apply', '--help']),
+                       ('hr-gate', ['--apply', '--dry-run']), ('pending-promote', []),
+                       ('pending-promote', ['--fill']), ('pending-promote', ['--dry-run']),
+                       ('pending-promote', ['-h', '--apply'])):
+        assert not gl.wants_lock(tool, argv), (tool, argv)

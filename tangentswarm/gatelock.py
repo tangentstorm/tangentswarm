@@ -14,6 +14,9 @@ Contract (hr-gate and pending-promote implement the same one inline):
                is taken (only for the "busy" message; the flock is the truth)
   child runs   SWARM_SERIAL_HELD=1 (or the older HR_GATE_LOCK_HELD=1) in the
                environment: this process or a parent already holds the lock
+  who locks    only a run that changes state (wants_lock): hr-gate --apply or --demote,
+               pending-promote --apply. Never a dry run, a report (hr-gate --sweep alone),
+               -h/--help, or a script that only loads hr-gate with runpy.
 
     swarm-lock -n work-merge -- git -C WORKTREE push origin HEAD:work
     swarm-lock --status
@@ -35,6 +38,17 @@ OLD_HELD_ENV = 'HR_GATE_LOCK_HELD'
 
 def already_held(env):
     return env.get(HELD_ENV) == '1' or bool(env.get(OLD_HELD_ENV))
+
+
+NO_LOCK_FLAGS = ('-h', '--help', '--dry-run')
+MUTATING = {'hr-gate': ('--apply', '--demote'), 'pending-promote': ('--apply',)}
+
+
+def wants_lock(tool, argv):
+    """True if `tool argv...` changes state and so must hold the serial lock."""
+    args = list(argv)
+    return (any(a in MUTATING.get(tool, ()) for a in args)
+            and not any(a in NO_LOCK_FLAGS for a in args))
 
 
 class Busy(Exception):
