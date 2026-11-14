@@ -31,6 +31,7 @@ swarm-launch = "tangentswarm.launches:main"
 swarm-lock = "tangentswarm.gatelock:main"
 swarm-flow = "tangentswarm.flow:main"
 swarm-promoted = "tangentswarm.promoted:main"
+swarm-flow-status = "tangentswarm.flowstatus:main"
 
 [tool.setuptools]
 packages = ["tangentswarm", "tangentswarm.cloud", "tangentswarm.queue"]
