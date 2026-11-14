@@ -216,18 +216,26 @@ def test_once_idle_when_human_review_full(tmp_path):
     assert P.Promoter(g=g).once() == 'idle'
 
 
-def test_slow_path_promotes_only_unless_pull_is_on(tmp_path, monkeypatch):
+def test_slow_path_promotes_and_pull_path_never_promotes(tmp_path, monkeypatch):
     from tangentswarm import flow
     calls = []
     monkeypatch.setattr(flow.Flow, 'columns', lambda self: ({}, {}))
     monkeypatch.setattr(flow.Flow, 'promote', lambda self, cols: calls.append('promote'))
-    monkeypatch.setattr(flow.Flow, 'step', lambda self: calls.append('step'))
+    monkeypatch.setattr(flow.Flow, 'step', lambda self, promote=True: calls.append(f'step promote={promote}'))
     p = P.Promoter(g=G(tmp_path))
+    p.slow_path()
+    p.pull_path()
+    assert calls == ['promote', 'step promote=False']
+
+
+def test_needs_pull_only_when_on_and_staging_short_with_ready(monkeypatch):
     monkeypatch.setattr(P, 'PULL', False)
-    p.slow_path()
+    assert not P.needs_pull({board.READY: [1]}, None)
     monkeypatch.setattr(P, 'PULL', True)
-    p.slow_path()
-    assert calls == ['promote', 'step']
+    assert P.needs_pull({board.READY: [1]}, None)
+    assert P.needs_pull({}, {'pr': 4})  # a running pull must advance
+    assert not P.needs_pull({board.READY: [1], board.STAGING: [1, 2, 3]}, None)
+    assert not P.needs_pull({}, None)
 
 
 def test_slow_path_runs_once_per_leftover_head_then_waits_for_the_backstop(tmp_path):

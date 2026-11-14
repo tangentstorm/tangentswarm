@@ -26,8 +26,11 @@ it retries every RETRY seconds) and:
   4. Only if Human Review is still short and a Staging PR is left (stacked, or no gate
      pass): pending-promote --apply, still under the lock. It runs ONCE per leftover
      (PR, head), then again only after BACKSTOP seconds; a blocked head is re-gated by its
-     own event (the CI hook), not by a poll. With SWARM_PROMOTE_PULL=1,
-     a full swarm-flow step every time instead, which also pulls one Ready PR.
+     own event (the CI hook), not by a poll. 
+  5. With SWARM_PROMOTE_PULL=1 (off by default): the swarm-flow pull and its advance,
+     with no promote step. When Staging is short and Ready has a PR, the top Ready PR
+     that stacks cleanly is merged into work ONCE (the push redeploys staging) and gated
+     into Staging by hr-gate --apply.
 
     swarm-promoted                  run the daemon
     swarm-promoted --once [--dry-run]   one check (and promotion) and exit
@@ -76,6 +79,14 @@ def read_columns(gql):
         if not data['pageInfo']['hasNextPage']:
             return cols
         cursor = data['pageInfo']['endCursor']
+
+
+def needs_pull(cols, running):
+    """With SWARM_PROMOTE_PULL=1: a pull runs, or Staging is short and Ready has a PR."""
+    from . import flow
+    if not PULL:
+        return False
+    return bool(running) or (len(cols.get(board.STAGING, [])) < flow.STAGING_MIN and bool(cols.get(board.READY)))
 
 
 def needs_promotion(cols):
@@ -290,15 +301,20 @@ class Promoter:
         return moved
 
     def slow_path(self):
-        """After the fast move: pending-promote if Human Review is still short. With
-        SWARM_PROMOTE_PULL=1, a full swarm-flow step instead (it also pulls into Staging)."""
+        """After the fast move: pending-promote if Human Review is still short."""
         from . import flow
         f = flow.Flow(dry_run=self.dry, out=lambda line: None, g=self.g)
-        if PULL:
-            f.step()
-        else:
-            _, cols = f.columns()
-            f.promote(cols)
+        _, cols = f.columns()
+        f.promote(cols)
+        for line in f.did + f.notes:
+            say('flow: ' + line)
+
+    def pull_path(self):
+        """SWARM_PROMOTE_PULL=1: the swarm-flow pull and its advance, with no promote step.
+        The work merge happens ONCE, when the pulled PR enters Staging."""
+        from . import flow
+        f = flow.Flow(dry_run=self.dry, out=lambda line: None, g=self.g)
+        f.step(promote=False)
         for line in f.did + f.notes:
             say('flow: ' + line)
 
@@ -310,7 +326,9 @@ class Promoter:
         waiting = gatelock.queued()
         if not retry:
             cols = read_columns(self.g['gql'])
-            if not needs_promotion(cols) and not main_moved and not waiting:
+            from . import flow
+            pull_due = needs_pull(cols, flow.load_pull())
+            if not needs_promotion(cols) and not main_moved and not waiting and not pull_due:
                 return 'idle'
             if waiting:
                 say(f"{len(waiting)} queued gate request(s): draining")
@@ -330,9 +348,7 @@ class Promoter:
                     self.main_pass(cols, moved, main)
                     self.last_main = main
                 hr = len(cols.get(board.HUMAN_REVIEW, [])) + len(moved)
-                if PULL:
-                    self.slow_path()
-                elif hr < HR_TARGET and any(a[0].endswith('pending-promote') for a, _ in drained):
+                if hr < HR_TARGET and any(a[0].endswith('pending-promote') for a, _ in drained):
                     self.mark_tried()  # a queued pending-promote just ran: that was the slow path
                 elif hr < HR_TARGET and self.slow_due():
                     self.mark_tried()
@@ -340,6 +356,8 @@ class Promoter:
                 elif hr < HR_TARGET and self.left:
                     say('slow path already ran for ' + ', '.join(f'#{n} at {h[:8]}' for n, h, _ in self.left)
                         + f'; waiting for a new head or gate event (backstop {BACKSTOP}s)')
+                if PULL:
+                    self.pull_path()
         except gatelock.Busy as e:
             say(f"busy: {e}; retrying in {RETRY}s")
             return 'busy'

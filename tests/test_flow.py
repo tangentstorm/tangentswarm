@@ -259,3 +259,21 @@ def test_fast_track_takes_the_first_staging_slot_and_jumps_ready(monkeypatch):
     f.step()
     assert started == [8]
     assert [n for n, _ in seen[prs[8]['head']]] == ['#1', '#2']  # Human Review only, not Staging
+
+
+def test_step_without_promote_never_runs_pending_promote(monkeypatch):
+    calls = []
+
+    class S:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    f = flow.Flow(dry_run=True, out=lambda line: None, g={'ScratchRepo': S})
+    monkeypatch.setattr(f, 'columns', lambda: ({}, {board.HUMAN_REVIEW: []}))
+    monkeypatch.setattr(f, 'promote', lambda cols: calls.append('promote'))
+    monkeypatch.setattr(f, 'pull', lambda prs, cols, scratch: calls.append('pull'))
+    f.step(promote=False)
+    f.step()
+    assert calls == ['pull', 'promote', 'pull']

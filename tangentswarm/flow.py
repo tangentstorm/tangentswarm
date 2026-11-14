@@ -319,14 +319,16 @@ class Flow:
         self.change(f"#{n} -> In Progress: {reason[:200]}")
 
     # -- the step ---------------------------------------------------------------
-    def step(self):
+    def step(self, promote=True):
+        """One step. promote=False skips step 1: the swarm-promoted daemon refills Human
+        Review itself (cheap check), so it only needs the pull and its advance."""
         prs, cols = self.columns()
         hr, staging = cols.get(board.HUMAN_REVIEW, []), cols.get(board.STAGING, [])
         if len(hr) > HR_TARGET:
             self.note(f"Human Review holds {len(hr)} PRs (more than {HR_TARGET}): judgment needed")
         if len(staging) > STAGING_MAX:
             self.note(f"Staging holds {len(staging)} PRs (more than {STAGING_MAX})")
-        if self.promote(cols):
+        if promote and self.promote(cols):
             prs, cols = self.columns() if not self.dry else (prs, cols)
         with self.g['ScratchRepo']() as scratch:
             d = load_pull()
