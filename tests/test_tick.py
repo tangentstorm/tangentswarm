@@ -295,3 +295,9 @@ def test_panes_pass_submits_typed_input():
     t.panes_pass(FakeScratch())
     assert t.notes == []
     assert t.did == ["would: #7 submit typed prompt in %9: merge origin/main into ptw/draw-at-playhead"]
+
+
+def test_a_broken_screenshot_relay_names_the_url_rule():
+    rows = [('7a screenshots current', False, '1 of 1 image(s) do not render: x.png is not an absolute https URL')]
+    (line,) = tick.gate_reasons(rows)
+    assert 'absolute https image URLs' in line and 'never a relative file name' in line and 'x.png' in line

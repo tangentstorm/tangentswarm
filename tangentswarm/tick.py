@@ -14,14 +14,21 @@ bot holding it together by hand. Each pass:
        input       Claude is idle with text typed in its prompt that was not sent (this pass submits it)
        menu        Claude shows a numbered choice menu (a permission prompt and so on)
        exited      a shell where Claude ran, while the PR is still open
+  1b. For each open PR in In Progress or Auto Review whose body has no brief section,
+     writes the coordinator's brief file into the body (tangentswarm.brief). A PR with
+     no brief file is reported for judgment.
   2. For an In Progress PR whose Claude is finished, with no open Codex findings and a
      head that merges cleanly onto origin/main: marks the PR ready, moves the card to
      Auto Review and posts "@codex review" (once per head).
-  3. For each ready PR in In Progress or Auto Review that Codex passed on its head:
-     runs `hr-gate --apply N` when hr-gate conditions 1-8 pass. Order: the priority
-     milestone ("ptw 15") first, then the oldest entry into its column.
+  3. (Retired by methodology#56: Ready PRs get no gate. Only the flow step's one pulled
+     PR is gated.)
+  3b. Starts at most one held launch (swarm-launch queue) when the worker slice has
+     room, priority milestone first, then the oldest hold. Memory limits are read live.
+     Memory pressure that lasts PRESSURE_MINUTES or more is reported, with the numbers
+     and the held launches.
   4. Runs `active-gate --sweep --demote` and `active-gate --promote-missing`.
-  5. Runs `pending-promote --apply`.
+  5. Runs one swarm-flow step (tangentswarm.flow): promote Staging -> Human Review when
+     Human Review has fewer than 2, and pull one Ready PR into Staging.
   6. Closes every tmux window in session `agents` that belongs to a MERGED or CLOSED
      PR (the numbered name, a legacy name without the number, or a pane in that
      branch's worktree), except a window whose foreground command is claude or node,
@@ -57,6 +64,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import board, brief, flow, gatelock, launches
+
 ET = ZoneInfo('America/New_York')
 HOME = Path.home()
 BIN = Path(os.environ.get('SWARM_TICK_BIN', str(HOME / 'bin')))
@@ -75,6 +84,7 @@ LATER_COLS = ('Pending', 'Human Review', 'Done', 'Canceled')
 EXTRA_PARKED = {202, 344, 350}
 SHELLS = {'bash', 'sh', 'zsh', 'fish', 'dash'}
 STUCK_MINUTES = 20
+PRESSURE_MINUTES = int(os.environ.get('SWARM_PRESSURE_MINUTES', '10'))
 SETTLE = 1.5
 
 # ---------------------------------------------------------------------------
@@ -85,6 +95,7 @@ MENU_RE = re.compile(r'^\s*[❯>]\s*1\.\s|Enter to confirm|Esc to cancel|'
                      r'^\s*Do you want to (?:proceed|make this edit|create|run|allow)', re.M | re.I)
 WINDOW_PR_RE = re.compile(r'^[a-z/]+-(\d+)-')
 DIGITS_RE = re.compile(r'\d+')
+SCAFFOLD_RE = re.compile(r'^Start #\d+\s*$')
 
 
 def _bars(lines):
@@ -283,7 +294,8 @@ ROW_REASONS = {
     '4 ': 'needs a MinBot pass on this head',
     '5 ': 'Linux CI not green',
     '6 ': 'staging redeploy needed (served commit lacks head, or body names none)',
-    '7a': 'screenshots missing or older than the head/served commit',
+    '7a': 'screenshots missing or do not render: use absolute https image URLs (user-attachments or '
+          'the swarm-shots branch), never a relative file name',
     '7b': '"where to see it" line missing',
     '8 ': 'Michal commented after the head',
 }
@@ -373,28 +385,37 @@ def parked_windows():
 
 BOARD_Q = """query($c:String){organization(login:"tangentcode"){projectV2(number:4){items(first:100, after:$c){
  pageInfo{hasNextPage endCursor}
- nodes{id fieldValueByName(name:"Status"){...on ProjectV2ItemFieldSingleSelectValue{name}}
+ nodes{id fieldValueByName(name:"Status"){...on ProjectV2ItemFieldSingleSelectValue{name optionId}}
   content{__typename
    ...on PullRequest{number state isDraft headRefName headRefOid title repository{nameWithOwner}
-     milestone{title} labels(first:20){nodes{name}}
-     closingIssuesReferences(first:10){nodes{milestone{title}}}}}}}}}}"""
+     body milestone{title} labels(first:20){nodes{name}}
+     closingIssuesReferences(first:10){nodes{number milestone{title} labels(first:20){nodes{name}}}}}}}}}}}"""
 
 
 def board_prs(g):
     out, cursor = {}, None
+    active = board.active_fast_track()  # the ONE active fast-track ticket (kept by swarm-promoted)
     while True:
         data = g['gql'](BOARD_Q, c=cursor)['organization']['projectV2']['items']
         for it in data['nodes']:
             c = it.get('content') or {}
             if c.get('__typename') != 'PullRequest' or (c.get('repository') or {}).get('nameWithOwner') != REPO:
                 continue
-            col = (it.get('fieldValueByName') or {}).get('name')
+            col = board.column(it.get('fieldValueByName'))
             miles = [(c.get('milestone') or {}).get('title')]
             miles += [(i.get('milestone') or {}).get('title') for i in c['closingIssuesReferences']['nodes']]
             labels = {l['name'] for l in c['labels']['nodes']}
+            issue_labels = {l['name'] for i in c['closingIssuesReferences']['nodes']
+                            for l in ((i.get('labels') or {}).get('nodes') or [])}
             out[c['number']] = dict(number=c['number'], state=c['state'], draft=c['isDraft'],
                                     branch=c['headRefName'], head=c['headRefOid'], title=c['title'],
-                                    col=col, item=it['id'], rank=milestone_rank(miles),
+                                    body=c.get('body') or '',
+                                    col=col, item=it['id'],
+                                    rank=board.priority_rank(
+                                        board.is_active_fast_track(
+                                            c['number'], [i.get('number') for i in c['closingIssuesReferences']['nodes']],
+                                            active),
+                                                             milestone_rank(miles) == 0),
                                     parked=c['number'] in g['PARKED'] | EXTRA_PARKED or 'parked' in labels)
         if not data['pageInfo']['hasNextPage']:
             return out
@@ -548,6 +569,26 @@ class Tick:
                 self.out(f"pane {p['id']} {p['window']}: {p['cls']} pr={p['pr']} card={col} branch={wt.get('branch')} "
                          f"dirty={wt.get('dirty')} ahead={wt.get('ahead')}")
 
+    # step 1b: every working PR carries its brief ---------------------------
+    def brief_pass(self):
+        working = {n: pr for n, pr in self.prs.items()
+                   if pr['state'] == 'OPEN' and not pr['parked'] and pr['col'] in WORKING_COLS}
+        for n, has_file in brief.missing_briefs(working):
+            if not has_file:
+                self.note(n, None, f"{working[n]['col']} with no brief in the PR body and no brief file "
+                                   f"{brief.brief_path(n)}: write the brief")
+                continue
+            if self.dry:
+                self.change(f"#{n} write the brief into the PR body")
+                continue
+            try:
+                what = brief.write_brief(n, REPO)
+            except (RuntimeError, subprocess.TimeoutExpired) as e:
+                self.note(n, None, f"failed to write the brief into the PR body: {e}")
+                continue
+            if what == 'wrote':
+                self.change(f"#{n} wrote the brief into the PR body")
+
     # step 2 + pane judgment -------------------------------------------------
     def panes_pass(self, scratch):
         for n, pr in sorted(self.prs.items(), key=lambda kv: (kv[1]['rank'], kv[0])):
@@ -606,9 +647,27 @@ class Tick:
             self.note(n, s, 'Claude exited mid-work: worktree has uncommitted or unpushed changes')
         elif wt['head'] != pr['head']:
             self.note(n, s, f"Claude exited; local HEAD {(wt['head'] or '?')[:8]} is not PR head {pr['head'][:8]}")
+        elif not s['parked'] and self.never_started(n, pr, s):
+            return
         else:
             how = 'parked by swarm-park' if s['parked'] else 'exited'
             self.note(n, s, f"Claude {how}, worktree clean and pushed, PR still {'draft ' if pr['draft'] else ''}In Progress: resume with the open work, or mark ready")
+
+    def never_started(self, n, pr, s):
+        """A held launch left behind: an idle shell whose head is still the scaffold commit.
+
+        swarm-start-scoped leaves the shell window when memory holds the launch. If the
+        head is still the "Start #N" commit and a brief file exists, queue the launch."""
+        subject = git(s['wt'].get('top') or s.get('path'), 'log', '-1', '--format=%s') or ''
+        path = brief.brief_path(n)
+        if not SCAFFOLD_RE.match(subject) or brief.read_brief(n) is None:
+            return False
+        queued = any(r['branch'] == pr['branch'] for r in launches.read_queue())
+        if not queued:
+            if not self.dry:
+                launches.hold(pr['branch'], s['window'], n, str(path))
+            self.change(f"#{n} queued held launch {pr['branch']} (shell {s['id']}, head is the scaffold commit)")
+        return True
 
     def finished(self, n, pr, c, scratch):
         if c['wt']['head'] != pr['head']:
@@ -691,11 +750,56 @@ class Tick:
                 self.change(f"#{n} hr-gate --apply {n} (conditions 1-8 pass)")
                 continue
             rc, out = self.tool([BIN / 'hr-gate', '--apply', str(n)])
+            if rc == gatelock.EXIT_BUSY:
+                self.note(None, None, f"hr-gate --apply {n} skipped, gate lock {out.strip()[:150]}; next pass retries")
+                break
             msg = [l.strip() for l in out.splitlines() if re.match(r'\s+(moved|refused|stayed|stays|#\d+ has no)', l)]
             self.change(f"#{n} hr-gate --apply: " + (msg[-1] if msg else f"rc={rc}"))
             if any('stayed' in m and 'rebased onto' in m for m in msg):
                 self.note(n, pane, f"needs a speculative vN branch: relay /tmp/relay-{n}-spec.md to its Claude")
             hr_peers = self.g['list_hr_prs'](refresh=True)
+
+    # step 3b: held launches and memory pressure ---------------------------
+    def launch_pass(self, now=None):
+        now = time.time() if now is None else now
+        try:
+            m = launches.memory()
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            self.note(None, None, f"cannot read worker memory: {e}")
+            return
+        by_branch = {p['branch']: n for n, p in self.prs.items() if p['state'] == 'OPEN'}
+        rows = launches.read_queue()
+        for r in rows:
+            r['pr'] = r.get('pr') or by_branch.get(r['branch'])
+        rank = lambda pr: self.prs.get(pr, {}).get('rank', 1)  # noqa: E731
+        rows = launches.ordered(rows, rank)
+        ok = launches.admits(m)
+        since = self.state.data.get('pressure_since')
+        if ok:
+            self.state.data.pop('pressure_since', None)
+        else:
+            since = since or now
+            self.state.data['pressure_since'] = since
+            mins = int((now - since) // 60)
+            if mins >= PRESSURE_MINUTES:
+                held = ', '.join(f"#{r['pr']}" if r['pr'] else r['branch'] for r in rows) or 'none'
+                self.note(None, None, f"memory pressure for {mins} min: {launches.describe(m)}; "
+                                      f"held launches: {held}")
+        if not rows or not ok:
+            return
+        first = rows[0]
+        name = f"#{first['pr']}" if first['pr'] else first['branch']
+        if self.dry:
+            self.change(f"{name} start held launch {first['branch']} ({launches.describe(m)})")
+            return
+        what, row, out = launches.start_next(rank=rank, mem=lambda: m)
+        if what == 'launched':
+            self.change(f"{name} started held launch in {out.get('window')} ({out.get('pane')})")
+            if out.get('brief_error'):
+                self.note(first['pr'], None, f"started, but the brief line was not sent: {out['brief_error']}")
+        elif what == 'refused':
+            self.note(first['pr'], None, f"held launch {first['branch']} refused and dropped from the queue: "
+                                         f"{out.get('refused', out)}")
 
     # step 4 ---------------------------------------------------------------
     def active_pass(self):
@@ -726,10 +830,34 @@ class Tick:
             if rc == 2:
                 self.note(None, None, f"{argv[0].name} error: {out.strip().splitlines()[-1][:150] if out.strip() else rc}")
 
-    # step 5 ---------------------------------------------------------------
+    # step 5: the just-in-time flow (methodology#56) --------------------------
+    def flow_pass(self):
+        """Promote into Human Review and pull one Ready PR into Staging (swarm-flow step)."""
+        f = flow.Flow(dry_run=self.dry, out=lambda line: None, g=self.g)
+        try:
+            if self.dry:
+                f.step()
+            else:
+                with gatelock.gate_lock('swarm-tick flow step'):
+                    f.step()
+        except gatelock.Busy as e:
+            self.note(None, None, f"flow step skipped, gate lock busy: {e}; next pass retries")
+            return
+        except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+            self.note(None, None, f"flow step error: {e}")
+            return
+        for line in f.did:
+            self.did.append(line)
+        for line in f.notes:
+            self.note(None, None, 'flow: ' + line)
+
+    # retired by methodology#56: kept for reference, no longer called ------------
     def pending_pass(self):
         argv = [BIN / 'pending-promote', '--dry-run' if self.dry else '--apply']
         rc, out = self.tool(argv)
+        if rc == gatelock.EXIT_BUSY:
+            self.note(None, None, f"pending-promote skipped, gate lock {out.strip()[:150]}; next pass retries")
+            return
         pat = (r'would run: hr-gate|would pass hr-gate|would enter STACKED|FORCE-PUSH STEPS'
                if self.dry else r'moved #|force-updated|saved \w|reset ')
         for line in out.splitlines():
@@ -769,11 +897,12 @@ class Tick:
 
     def run(self):
         self.read()
+        self.brief_pass()
         with self.g['ScratchRepo']() as scratch:
             self.panes_pass(scratch)
-            self.hr_pass(scratch)
+        self.launch_pass()
         self.active_pass()
-        self.pending_pass()
+        self.flow_pass()
         self.closable()
         if not self.dry:
             self.state.save()

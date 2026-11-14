@@ -774,12 +774,19 @@ swarm-tick --verbose     # also print every pane's class and each tool's output
 Each pass classifies every pane in the tmux session `agents` (working, finished,
 idle-dirty, asking, input, menu, exited). It then does the safe mechanical moves:
 
+- An open In Progress or Auto Review PR whose body has no brief section gets the
+  coordinator's brief file (`$SWARM_BRIEF_DIR/<PR>.txt`) added at the end of its body.
+  A PR with no brief file is reported for judgment.
+- A held launch is started when the worker slice has room: one per pass, priority
+  milestone first, then the oldest hold (see `swarm-launch` below). An idle shell whose
+  head is still the `Start #N` scaffold commit, with a brief file, is a held launch that
+  was left behind; the pass queues it. Memory pressure that lasts 10 minutes or more is
+  reported with the live slice numbers and the held launches.
 - A draft In Progress PR whose Claude is finished (idle, clean worktree, local HEAD is
   the pushed PR head, no open Codex findings, head merges cleanly onto origin/main) is
   marked ready and moved to Auto Review, with one `@codex review` per head.
-- A ready, Codex-clean PR goes through `hr-gate --apply` when hr-gate conditions 1-8 pass.
-- `active-gate --sweep --demote`, `active-gate --promote-missing` and
-  `pending-promote --apply` run as they are.
+- `active-gate --sweep --demote` and `active-gate --promote-missing` run as they are.
+- One `swarm-flow step` runs (see below). Ready PRs are never gated by the tick.
 
 Candidates in the priority milestone (`ptw 15`; override with
 `SWARM_PRIORITY_MILESTONES`) go first, then FIFO.
@@ -792,6 +799,135 @@ mid-work. A pass with nothing to do prints nothing.
 swarm-tick never merges, deploys, types into a pane, or kills or closes anything. It
 reuses the tools in `~/bin` (hr-gate, active-gate, pending-promote) and mn-workflow's
 state file; it does not replace them. Its log is `~/.local/state/swarm-tick/tick.log`.
+
+### swarm-brief: the brief in the PR body
+
+The coordinator writes one brief per worker PR to `$SWARM_BRIEF_DIR/<PR>.txt`. A draft
+PR scaffolded with only `Fixes #N` hides that brief from reviewers. `swarm-brief` puts
+the brief in a marked section at the end of the PR body:
+
+```sh
+swarm-brief 472 --file brief.md   # save the brief for #472, then write it into the body
+swarm-brief 472 473               # write the saved briefs into the bodies (no-op if present)
+swarm-brief --check 472 473       # report only
+```
+
+The section starts with `<!-- swarm-brief:start -->` and ends with
+`<!-- swarm-brief:end -->`. A gate check that reads the body (screenshots, the
+where-to-see line, the served commit, code-only) must skip this section, because a
+brief names those things before they exist. `tangentswarm.brief.strip_brief()` does that.
+
+### swarm-launch: held launches
+
+`swarm-start-scoped` exits 3 when the worker slice is short of memory and leaves an
+idle shell. `swarm-launch` runs it and puts a held launch in a queue
+(`$SWARM_HELD`); swarm-tick starts queued launches as memory frees and sends each new
+Claude one line that points to its brief file.
+
+```sh
+swarm-launch BRANCH [WINDOW] --pr N --brief FILE   # start now, or queue on a hold
+swarm-launch --list                                # live memory and the queue
+swarm-launch --next                                # start the first queued launch if memory admits it
+swarm-launch --drop BRANCH
+```
+
+Memory is read live each time: the slice's MemoryCurrent, MemoryHigh and MemoryMax,
+and the host's MemAvailable. A launch needs 700 MB under MemoryHigh and more than
+1.5 GB available, the same rule as `swarm-start-scoped`.
+
+### swarm-flow: the just-in-time Human Review flow
+
+`swarm-flow` enforces methodology#56. Columns are matched by option id
+(`tangentswarm.board`): Ready (finished, never merged, gated or checked), Staging (3 to 5
+fully prepared PRs) and Human Review (exactly 2).
+
+```sh
+swarm-flow step [--dry-run]   # one step under the serial lock (exit 75 = busy)
+swarm-flow event NAME < JSON  # from the GitHub hook: steps only on a Status change or a merge
+swarm-flow status             # Human Review, Staging, Ready, and the running pull
+```
+
+One step:
+
+1. **Promote.** Human Review has fewer than 2: `pending-promote --apply` (never `--fill`).
+2. **Pull.** Staging has fewer than 3 and no pull runs: take the top Ready PR (priority
+   milestone, fewest conflicts, oldest) that stacks cleanly on main + Human Review +
+   Staging (local merge-tree only). A PR that does not merge onto main goes back to In
+   Progress with a merge-main relay. Merge the head into `work` as one merge commit and
+   push it; the push redeploys staging.
+3. **Advance the pull.** Evaluate hr-gate on the pulled head. All pass: `hr-gate --apply`
+   puts it into Staging. CI running or screenshots missing: wait (90 minutes at most). A
+   hard failure or a moved head: back to In Progress with the reason.
+
+Only the pulled PR is merged, deployed or gated. swarm-tick runs one step per pass; the
+GitHub hook runs `swarm-flow event` on `projects_v2_item` and merge events.
+
+### Fast-track (methodology#60)
+
+First keep the flow full (Human Review 2, Staging 3-5, more Ready). Within that, a PR
+labeled `fast-track` or `high priority` (on the PR or on an issue it closes) jumps the
+queue at every step: held launches and pane order in swarm-tick, the Ready head, the
+FIRST Staging slot (it stacks on main + Human Review only; the Staging PRs behind it are
+re-stacked at their own promotion), and the next free Human Review slot. The serial lock
+and every gate still apply. `tangentswarm.board.priority_rank()` is the rule; the live
+hr-gate's queue order uses the same one.
+
+### swarm-promoted: refill Human Review in seconds
+
+A systemd user service with no LLM in the path. Every 30 seconds (or at once on
+`SIGUSR1`, for example from a webhook receiver after a merge) it reads the Status of
+every open PR in one lean GraphQL query, through the minbot shim. When Human Review holds
+fewer than 2 and Staging is not empty, it takes the serial lock (retrying every 5
+seconds while busy) and:
+
+1. **Fast path:** if the Staging head was gated at its current head commit (an hr-gate
+   PASS or PENDING line with no failure) and is not stacked, it moves that card to Human
+   Review first and writes the hr-gate PASS line.
+2. **Slow path:** `pending-promote --apply` if Human Review is still short.
+   `SWARM_PROMOTE_PULL=1` runs a full `swarm-flow step` instead (it also pulls).
+
+```sh
+swarm-promoted --once --dry-run      # one check; print what it would move
+systemctl --user kill -s USR1 swarm-promoted   # wake it now
+```
+
+### swarm-lock: one gate operation at a time
+
+Only one merge or gate operation may run at a time: `hr-gate --apply`, `hr-gate
+--sweep`, `pending-promote` and the work merge. Each takes one global lock with a
+non-blocking flock. A second caller prints `busy: <holder>` and exits 75 at once, with
+no API call; the next event or pass tries again. swarm-tick reports a busy lock as a
+note, not as an error.
+
+```sh
+swarm-lock -n work-merge -- git push origin HEAD:work   # run a command under the lock
+swarm-lock --status                                      # free, or busy and the holder
+```
+
+The lock file is `$SWARM_GATE_LOCK` (default `~/.cache/swarm-serial.lock`); the holder
+note is next to it. `SWARM_SERIAL_HELD=1` (or the older `HR_GATE_LOCK_HELD=1`) marks a
+run whose parent already holds the lock. `hr-gate --apply` also skips draft PRs before it takes the lock.
+
+### swarm-hookgate: the CI-completion hook's front gate
+
+A CI-completion hook runs `ci-last-check SHA` first and stops when it exits 1. A storm
+of CI events on new draft PRs once used up the whole REST quota. `swarm-hookgate`
+decides before any REST call:
+
+```sh
+swarm-hookgate ci-last-check SHA   # gate, then the REST check; 0 = go on, 1 = stop, 2 = error
+swarm-hookgate check SHA           # gate only (no REST call)
+swarm-hookgate wait                # return once the REST quota has a reserve; sleep through the reset
+```
+
+- It maps the SHA to a PR with a cached board snapshot (GraphQL only; refreshed when it
+  is older than 2 minutes or the SHA is not a known head).
+- It skips closed and draft PRs, and every card outside Auto Review and Pending.
+- It debounces per head: a head with complete CI is skipped for 30 minutes, and repeated
+  events while CI runs reach the REST check at most once a minute.
+- Below 300 REST calls left it waits for the reset time instead of failing mid-run.
+
+The `SWARM_HOOK_*` variables override these limits. The state is in `~/.cache/swarm-hook`.
 
 ## License
 
